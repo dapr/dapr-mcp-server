@@ -9,7 +9,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // PubSubClient defines the interface for pub/sub operations.
@@ -23,15 +26,25 @@ type PublishArgs struct {
 	Message    string `json:"message" jsonschema:"The message payload to publish, typically a JSON string."`
 }
 
-var pubsubClient PubSubClient
+var (
+	pubsubClient PubSubClient
+	toolMetrics  *telemetry.ToolMetrics
+)
 
 func publishEventTool(ctx context.Context, req *mcp.CallToolRequest, args PublishArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "publish_event", "pubsub")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "publish_event")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "publish_event"),
-		attribute.String("dapr.pubsub", args.PubsubName),
-		attribute.String("dapr.topic", args.Topic),
+		attribute.String("mcp.tool.name", "publish_event"),
+		attribute.String("mcp.tool.package", "pubsub"),
+		attribute.String("dapr.component.name", args.PubsubName),
+		attribute.String("dapr.pubsub.topic", args.Topic),
 	)
 
 	data := []byte(args.Message)
@@ -46,12 +59,22 @@ func publishEventTool(ctx context.Context, req *mcp.CallToolRequest, args Publis
 	}
 
 	if err := pubsubClient.PublishEvent(ctx, args.PubsubName, args.Topic, data, opts...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.PubsubName)
+		}
 		log.Printf("Dapr PublishEvent failed: %v", err)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
 				Text: fmt.Sprintf("Failed to publish event to topic '%s' on pubsub '%s'. Dapr Error: %v", args.Topic, args.PubsubName, err),
 			}},
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.PubsubName)
 	}
 
 	successMessage := fmt.Sprintf("Successfully published message to topic '%s' on pubsub component '%s'.", args.Topic, args.PubsubName)
@@ -76,12 +99,19 @@ type PublishWithMetadataArgs struct {
 }
 
 func publishEventWithMetadataTool(ctx context.Context, req *mcp.CallToolRequest, args PublishWithMetadataArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "publish_event_with_metadata", "pubsub")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "publish_event_with_metadata")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "publish_event_with_metadata"),
-		attribute.String("dapr.pubsub", args.PubsubName),
-		attribute.String("dapr.topic", args.Topic),
+		attribute.String("mcp.tool.name", "publish_event_with_metadata"),
+		attribute.String("mcp.tool.package", "pubsub"),
+		attribute.String("dapr.component.name", args.PubsubName),
+		attribute.String("dapr.pubsub.topic", args.Topic),
 	)
 	data := []byte(args.Message)
 
@@ -92,12 +122,22 @@ func publishEventWithMetadataTool(ctx context.Context, req *mcp.CallToolRequest,
 	opts = append(opts, dapr.PublishEventWithContentType("application/json"))
 
 	if err := pubsubClient.PublishEvent(ctx, args.PubsubName, args.Topic, data, opts...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.PubsubName)
+		}
 		log.Printf("Dapr PublishEventWithMetadata failed: %v", err)
 		toolErrorMessage := fmt.Sprintf("failed to publish event to topic '%s' on pubsub '%s' with metadata. Dapr Error: %v", args.Topic, args.PubsubName, err)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.PubsubName)
 	}
 
 	successMessage := fmt.Sprintf("Successfully published message with %d metadata key(s) to topic '%s' on pubsub component '%s'.", len(args.Metadata), args.Topic, args.PubsubName)
@@ -115,8 +155,9 @@ func publishEventWithMetadataTool(ctx context.Context, req *mcp.CallToolRequest,
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client PubSubClient) {
+func RegisterTools(server *mcp.Server, client PubSubClient, metrics *telemetry.ToolMetrics) {
 	pubsubClient = client
+	toolMetrics = metrics
 
 	notDestructive := false
 	notIdempotent := false

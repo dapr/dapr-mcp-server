@@ -235,7 +235,7 @@ func TestRegisterTools(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
 	// Should not panic
-	RegisterTools(server, mockClient)
+	RegisterTools(server, mockClient, nil)
 
 	assert.Equal(t, mockClient, secretsClient)
 }

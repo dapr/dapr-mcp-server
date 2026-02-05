@@ -272,7 +272,7 @@ func TestRegisterTools(t *testing.T) {
 	// Just verify it doesn't panic with a nil client (edge case testing).
 	// The real integration is tested via the converseTool tests.
 	assert.NotPanics(t, func() {
-		RegisterTools(server, nil)
+		RegisterTools(server, nil, nil)
 	})
 }
 

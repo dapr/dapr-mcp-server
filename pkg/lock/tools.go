@@ -9,6 +9,10 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // LockClient defines the interface for lock operations.
@@ -30,11 +34,27 @@ type ReleaseLockArgs struct {
 	LockOwner  string `json:"lockOwner" jsonschema:"The unique identifier of the entity that currently holds the lock."`
 }
 
-var lockClient LockClient
+var (
+	lockClient  LockClient
+	toolMetrics *telemetry.ToolMetrics
+)
 
 func acquireLockTool(ctx context.Context, req *mcp.CallToolRequest, args AcquireLockArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "acquire_lock", "lock")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "acquire_lock")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "acquire_lock"),
+		attribute.String("mcp.tool.package", "lock"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.lock.resource_id", args.ResourceID),
+		attribute.String("dapr.lock.owner", args.LockOwner),
+	)
 
 	lockReq := &dapr.LockRequest{
 		LockOwner:       args.LockOwner,
@@ -47,12 +67,22 @@ func acquireLockTool(ctx context.Context, req *mcp.CallToolRequest, args Acquire
 
 	resp, err := lockClient.TryLockAlpha1(rpcCtx, args.StoreName, lockReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr TryLockAlpha1 failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr API error while trying to acquire lock: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	var successMessage string
@@ -78,8 +108,21 @@ func acquireLockTool(ctx context.Context, req *mcp.CallToolRequest, args Acquire
 }
 
 func releaseLockTool(ctx context.Context, req *mcp.CallToolRequest, args ReleaseLockArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "release_lock", "lock")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "release_lock")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "release_lock"),
+		attribute.String("mcp.tool.package", "lock"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.lock.resource_id", args.ResourceID),
+		attribute.String("dapr.lock.owner", args.LockOwner),
+	)
 
 	unlockReq := &dapr.UnlockRequest{
 		LockOwner:  args.LockOwner,
@@ -88,12 +131,22 @@ func releaseLockTool(ctx context.Context, req *mcp.CallToolRequest, args Release
 
 	resp, err := lockClient.UnlockAlpha1(ctx, args.StoreName, unlockReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr UnlockAlpha1 failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr API error while trying to release lock: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	var statusMessage string
@@ -132,8 +185,9 @@ func releaseLockTool(ctx context.Context, req *mcp.CallToolRequest, args Release
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client LockClient) {
+func RegisterTools(server *mcp.Server, client LockClient, metrics *telemetry.ToolMetrics) {
 	lockClient = client
+	toolMetrics = metrics
 
 	notDestructive := false
 	acquireIsIdempotent := true

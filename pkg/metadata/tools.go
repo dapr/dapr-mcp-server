@@ -9,6 +9,10 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // MetadataClient defines the interface for metadata operations.
@@ -27,14 +31,24 @@ type ComponentInfo struct {
 	Capabilities []string `json:"capabilities" jsonschema:"The capabilities of the Component."`
 }
 
-var metadataClient MetadataClient
+var (
+	metadataClient MetadataClient
+	toolMetrics    *telemetry.ToolMetrics
+)
 
 func GetLiveComponentList(ctx context.Context, client MetadataClient) ([]ComponentInfo, error) {
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "get_components")
 	defer span.End()
 
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "get_components"),
+		attribute.String("mcp.tool.package", "metadata"),
+	)
+
 	metadata, err := client.GetMetadata(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to fetch Dapr metadata: %w", err)
 	}
 
@@ -61,6 +75,8 @@ func GetLiveComponentList(ctx context.Context, client MetadataClient) ([]Compone
 			})
 		}
 	}
+
+	span.SetStatus(codes.Ok, "")
 	return components, nil
 }
 
@@ -69,7 +85,16 @@ func getMetadataTool(ctx context.Context, req *mcp.CallToolRequest, args any) (
 	ComponentListWrapper,
 	error,
 ) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "get_components", "metadata")
+	}
+
 	if metadataClient == nil {
+		if timer != nil {
+			timer.Stop("error", "metadata")
+		}
 		toolErrorMessage := "Dapr client not initialized on the server side."
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
@@ -80,6 +105,9 @@ func getMetadataTool(ctx context.Context, req *mcp.CallToolRequest, args any) (
 
 	components, err := GetLiveComponentList(ctx, metadataClient)
 	if err != nil {
+		if timer != nil {
+			timer.Stop("error", "metadata")
+		}
 		log.Printf("Error calling getMetadataTool: %v", err)
 		toolErrorMessage := fmt.Sprintf("Error fetching live Dapr component list: %v", err)
 		return &mcp.CallToolResult{
@@ -88,6 +116,10 @@ func getMetadataTool(ctx context.Context, req *mcp.CallToolRequest, args any) (
 		}, ComponentListWrapper{}, nil
 	}
 	log.Printf("Components: %s", components)
+
+	if timer != nil {
+		timer.Stop("success", "metadata")
+	}
 
 	wrapper := ComponentListWrapper{
 		Components: components,
@@ -100,8 +132,9 @@ func getMetadataTool(ctx context.Context, req *mcp.CallToolRequest, args any) (
 	}, wrapper, nil
 }
 
-func RegisterTools(server *mcp.Server, client MetadataClient) {
+func RegisterTools(server *mcp.Server, client MetadataClient, metrics *telemetry.ToolMetrics) {
 	metadataClient = client
+	toolMetrics = metrics
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_components",

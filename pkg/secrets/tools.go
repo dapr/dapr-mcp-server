@@ -9,7 +9,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // SecretsClient defines the interface for secrets operations.
@@ -29,11 +33,26 @@ type GetBulkSecretArgs struct {
 	Metadata  map[string]string `json:"metadata" jsonschema:"Optional per-request metadata for the bulk retrieval operation."`
 }
 
-var secretsClient SecretsClient
+var (
+	secretsClient SecretsClient
+	toolMetrics   *telemetry.ToolMetrics
+)
 
 func getSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetSecretArgs) (*mcp.CallToolResult, map[string]string, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "get_secret", "secrets")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "get_secret")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "get_secret"),
+		attribute.String("mcp.tool.package", "secrets"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.secrets.key", args.SecretName),
+	)
 
 	// Merge user metadata with baggage
 	metadata := make(map[string]string)
@@ -45,12 +64,22 @@ func getSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetSecret
 
 	secrets, err := secretsClient.GetSecret(ctx, args.StoreName, args.SecretName, metadata)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr GetSecret failed: %v", err)
 		toolErrorMessage := fmt.Errorf("failed to get secret '%s': %w", args.SecretName, err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	var secretKeys []string
@@ -75,8 +104,19 @@ func getSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetSecret
 }
 
 func getBulkSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetBulkSecretArgs) (*mcp.CallToolResult, map[string]map[string]string, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "get_bulk_secret", "secrets")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "get_bulk_secret")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "get_bulk_secret"),
+		attribute.String("mcp.tool.package", "secrets"),
+		attribute.String("dapr.component.name", args.StoreName),
+	)
 
 	// Merge user metadata with baggage
 	metadata := make(map[string]string)
@@ -88,12 +128,22 @@ func getBulkSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetBu
 
 	secretsBulk, err := secretsClient.GetBulkSecret(ctx, args.StoreName, metadata)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr GetBulkSecret failed: %v", err)
 		toolErrorMessage := fmt.Errorf("failed to get bulk secrets from store '%s': %w", args.StoreName, err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	var secretNames []string
@@ -117,8 +167,9 @@ func getBulkSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetBu
 	}, secretsBulk, nil
 }
 
-func RegisterTools(server *mcp.Server, client SecretsClient) {
+func RegisterTools(server *mcp.Server, client SecretsClient, metrics *telemetry.ToolMetrics) {
 	secretsClient = client
+	toolMetrics = metrics
 
 	isReadOnly := true
 	isIdempotent := true

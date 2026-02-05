@@ -11,7 +11,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/types/known/anypb"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // ConversationClient defines the interface for conversation operations.
@@ -37,11 +41,25 @@ type ConverseArgs struct {
 	Temperature float64 `json:"temperature,omitempty" jsonschema:"Optional: LLM temperature setting (0.0 to 1.0). Default is 0.7."`
 }
 
-var daprClient ConversationClient
+var (
+	daprClient  ConversationClient
+	toolMetrics *telemetry.ToolMetrics
+)
 
 func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "converse", "conversation")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "converse")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "converse"),
+		attribute.String("mcp.tool.package", "conversation"),
+		attribute.String("dapr.conversation.name", args.Name),
+	)
 
 	contextID := args.ContextID
 	if contextID == "" {
@@ -100,6 +118,11 @@ func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseAr
 
 	resp, err := daprClient.ConverseAlpha2(ctx, converseReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.Name)
+		}
 		log.Printf("Dapr Converse failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr API error while conversing with LLM '%s': %w", args.Name, err).Error()
 		return &mcp.CallToolResult{
@@ -109,6 +132,10 @@ func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseAr
 	}
 
 	if len(resp.Outputs) == 0 {
+		span.SetStatus(codes.Error, "empty outputs")
+		if timer != nil {
+			timer.Stop("error", args.Name)
+		}
 		toolErrorMessage := fmt.Sprintf("LLM '%s' returned an empty outputs list", args.Name)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
@@ -118,11 +145,20 @@ func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseAr
 	lastOutput := resp.Outputs[len(resp.Outputs)-1]
 
 	if len(lastOutput.Choices) == 0 {
+		span.SetStatus(codes.Error, "no choices")
+		if timer != nil {
+			timer.Stop("error", args.Name)
+		}
 		toolErrorMessage := fmt.Sprintf("LLM '%s' returned no choices in the last output", args.Name)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.Name)
 	}
 
 	var result strings.Builder
@@ -168,8 +204,9 @@ func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseAr
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client dapr.Client) {
+func RegisterTools(server *mcp.Server, client dapr.Client, metrics *telemetry.ToolMetrics) {
 	daprClient = &daprClientAdapter{client: client}
+	toolMetrics = metrics
 
 	isDestructive := false
 	isReadOnly := true

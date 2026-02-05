@@ -10,7 +10,11 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // BindingsClient defines the interface for bindings operations.
@@ -25,11 +29,26 @@ type InvokeBindingArgs struct {
 	Metadata    map[string]string `json:"metadata" jsonschema:"Optional key-value pairs required by the specific binding component for the operation (e.g., 'key' for a storage binding)."`
 }
 
-var bindingsClient BindingsClient
+var (
+	bindingsClient BindingsClient
+	toolMetrics    *telemetry.ToolMetrics
+)
 
 func invokeOutputBindingTool(ctx context.Context, req *mcp.CallToolRequest, args InvokeBindingArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "invoke_binding", "bindings")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "invoke_binding")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "invoke_binding"),
+		attribute.String("mcp.tool.package", "bindings"),
+		attribute.String("dapr.component.name", args.BindingName),
+		attribute.String("dapr.binding.operation", args.Operation),
+	)
 
 	data := []byte(args.Data)
 
@@ -54,12 +73,22 @@ func invokeOutputBindingTool(ctx context.Context, req *mcp.CallToolRequest, args
 
 	resp, err := bindingsClient.InvokeBinding(ctx, bindingReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.BindingName)
+		}
 		log.Printf("Dapr InvokeOutputBinding failed for binding %s: %v", args.BindingName, err)
 		toolErrorMessage := fmt.Sprintf("Failed to invoke binding '%s' with operation '%s'. Dapr Error: %v", args.BindingName, args.Operation, err)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.BindingName)
 	}
 
 	resultData := ""
@@ -86,8 +115,9 @@ func invokeOutputBindingTool(ctx context.Context, req *mcp.CallToolRequest, args
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client BindingsClient) {
+func RegisterTools(server *mcp.Server, client BindingsClient, metrics *telemetry.ToolMetrics) {
 	bindingsClient = client
+	toolMetrics = metrics
 
 	isDestructive := true
 	notReadOnly := false

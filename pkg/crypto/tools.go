@@ -10,6 +10,10 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // CryptoClient defines the interface for cryptography operations.
@@ -28,11 +32,26 @@ type DecryptArgs struct {
 	CipherText    string `json:"cipherText" jsonschema:"The base64-encoded encrypted message to be decrypted."`
 }
 
-var cryptoClient CryptoClient
+var (
+	cryptoClient CryptoClient
+	toolMetrics  *telemetry.ToolMetrics
+)
 
 func encryptTool(ctx context.Context, req *mcp.CallToolRequest, args EncryptArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "encrypt", "crypto")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "encrypt")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "encrypt"),
+		attribute.String("mcp.tool.package", "crypto"),
+		attribute.String("dapr.component.name", args.ComponentName),
+		attribute.String("dapr.crypto.algorithm", "RSA"),
+	)
 
 	plainStream := strings.NewReader(args.PlainText)
 
@@ -44,6 +63,11 @@ func encryptTool(ctx context.Context, req *mcp.CallToolRequest, args EncryptArgs
 
 	cipherStream, err := cryptoClient.Encrypt(ctx, plainStream, encryptOpts)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.ComponentName)
+		}
 		log.Printf("Dapr Encrypt failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr Encrypt failed: %w", err).Error()
 		return &mcp.CallToolResult{
@@ -54,11 +78,21 @@ func encryptTool(ctx context.Context, req *mcp.CallToolRequest, args EncryptArgs
 
 	cipherBuf, err := io.ReadAll(cipherStream)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.ComponentName)
+		}
 		toolErrorMessage := fmt.Errorf("failed to read encrypted stream: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.ComponentName)
 	}
 
 	cipherText := string(cipherBuf)
@@ -78,8 +112,19 @@ func encryptTool(ctx context.Context, req *mcp.CallToolRequest, args EncryptArgs
 }
 
 func decryptTool(ctx context.Context, req *mcp.CallToolRequest, args DecryptArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "decrypt", "crypto")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "decrypt")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "decrypt"),
+		attribute.String("mcp.tool.package", "crypto"),
+		attribute.String("dapr.component.name", args.ComponentName),
+	)
 
 	cipherStream := strings.NewReader(args.CipherText)
 
@@ -90,6 +135,11 @@ func decryptTool(ctx context.Context, req *mcp.CallToolRequest, args DecryptArgs
 
 	plainStream, err := cryptoClient.Decrypt(ctx, cipherStream, decryptOpts)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.ComponentName)
+		}
 		log.Printf("Dapr Decrypt failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr Decrypt failed: %v", err).Error()
 		return &mcp.CallToolResult{
@@ -100,11 +150,21 @@ func decryptTool(ctx context.Context, req *mcp.CallToolRequest, args DecryptArgs
 
 	plainBuf, err := io.ReadAll(plainStream)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.ComponentName)
+		}
 		toolErrorMessage := fmt.Errorf("failed to read decrypted stream: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.ComponentName)
 	}
 
 	plainText := string(plainBuf)
@@ -124,8 +184,9 @@ func decryptTool(ctx context.Context, req *mcp.CallToolRequest, args DecryptArgs
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client CryptoClient) {
+func RegisterTools(server *mcp.Server, client CryptoClient, metrics *telemetry.ToolMetrics) {
 	cryptoClient = client
+	toolMetrics = metrics
 
 	// Encrypt Annotations
 	notIdempotent := false

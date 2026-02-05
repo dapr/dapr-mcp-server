@@ -97,18 +97,25 @@ func main() {
 	} else {
 		defer func() {
 			if shutdownErr := shutdown(ctx); shutdownErr != nil {
-				logger.Error("Error shutting down telemetry", "error", shutdownErr)
+				slog.Error("Error shutting down telemetry", "error", shutdownErr)
 			}
 		}()
+		// Switch to the OTEL-wrapped logger that was set as default
+		logger = slog.Default()
 		logger.Info("OpenTelemetry initialized successfully")
 	}
 
-	// Initialize metrics
-	metrics, err := telemetry.NewToolMetrics()
+	// Initialize tool metrics
+	toolMetrics, err := telemetry.NewToolMetrics()
 	if err != nil {
-		logger.Warn("Failed to initialize metrics", "error", err)
+		logger.Warn("Failed to initialize tool metrics", "error", err)
 	}
-	_ = metrics // Will be used for tool instrumentation in future
+
+	// Initialize HTTP metrics
+	httpMetrics, err := telemetry.NewHTTPMetrics()
+	if err != nil {
+		logger.Warn("Failed to initialize HTTP metrics", "error", err)
+	}
 
 	// Set up OpenTelemetry propagator for trace context and baggage
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
@@ -142,9 +149,9 @@ func main() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, opts)
 
 	// Register core tools
-	metadata.RegisterTools(server, DaprClient)
-	invoke.RegisterTools(server, DaprClient)
-	actor.RegisterTools(server, DaprClient)
+	metadata.RegisterTools(server, DaprClient, toolMetrics)
+	invoke.RegisterTools(server, DaprClient, toolMetrics)
+	actor.RegisterTools(server, DaprClient, toolMetrics)
 
 	// Discover components and register conditional tools
 	componentPresence := make(map[string]bool)
@@ -174,25 +181,25 @@ func main() {
 	logger.Info("Discovered Dapr components", "components", componentPresence)
 
 	if componentPresence["pubsub"] {
-		pubsub.RegisterTools(server, DaprClient)
+		pubsub.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["bindings"] {
-		binding.RegisterTools(server, DaprClient)
+		binding.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["state"] {
-		state.RegisterTools(server, DaprClient)
+		state.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["secrets"] {
-		secret.RegisterTools(server, DaprClient)
+		secret.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["conversation"] {
-		conversation.RegisterTools(server, DaprClient)
+		conversation.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["crypto"] {
-		crypto.RegisterTools(server, DaprClient)
+		crypto.RegisterTools(server, DaprClient, toolMetrics)
 	}
 	if componentPresence["lock"] {
-		lock.RegisterTools(server, DaprClient)
+		lock.RegisterTools(server, DaprClient, toolMetrics)
 	}
 
 	if *httpAddr != "" {
@@ -238,14 +245,11 @@ func main() {
 			return server
 		}, nil)
 
-		// Wrap with telemetry and auth middleware
-		wrappedMCPHandler := authMiddleware(telemetry.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			carrier := propagation.HeaderCarrier(r.Header)
-			ctx := prop.Extract(r.Context(), carrier)
-			prop.Inject(ctx, propagation.HeaderCarrier(w.Header()))
-			r = r.WithContext(ctx)
+		// Wrap with telemetry (outer) and auth (inner) middleware
+		// Telemetry must be outer so metrics are recorded for ALL requests including auth failures
+		wrappedMCPHandler := telemetry.HTTPMiddleware(authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mcpHandler.ServeHTTP(w, r)
-		})))
+		})), logger, httpMetrics)
 
 		// Handle Dapr subscription endpoint
 		mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {

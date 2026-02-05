@@ -10,7 +10,11 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // InvokeClient defines the interface for service invocation operations.
@@ -26,11 +30,27 @@ type InvokeServiceArgs struct {
 	Metadata map[string]string `json:"metadata,omitempty" jsonschema:"Optional key-value pairs to send as HTTP headers."`
 }
 
-var invokeClient InvokeClient
+var (
+	invokeClient InvokeClient
+	toolMetrics  *telemetry.ToolMetrics
+)
 
 func invokeServiceTool(ctx context.Context, req *mcp.CallToolRequest, args InvokeServiceArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "invoke_service", "invoke")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "invoke_service")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "invoke_service"),
+		attribute.String("mcp.tool.package", "invoke"),
+		attribute.String("dapr.invoke.app_id", args.AppID),
+		attribute.String("dapr.invoke.method", args.Method),
+		attribute.String("dapr.invoke.verb", args.HTTPVerb),
+	)
 
 	if args.HTTPVerb == "" {
 		args.HTTPVerb = "POST"
@@ -51,12 +71,22 @@ func invokeServiceTool(ctx context.Context, req *mcp.CallToolRequest, args Invok
 
 	resp, err := invokeClient.InvokeMethodWithContent(ctx, args.AppID, args.Method, args.HTTPVerb, content)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.AppID)
+		}
 		log.Printf("Dapr InvokeMethod failed for app %s/%s: %v", args.AppID, args.Method, err)
 		toolErrorMessage := fmt.Errorf("failed to invoke service method: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.AppID)
 	}
 
 	var resultData bytes.Buffer
@@ -91,8 +121,9 @@ func invokeServiceTool(ctx context.Context, req *mcp.CallToolRequest, args Invok
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client InvokeClient) {
+func RegisterTools(server *mcp.Server, client InvokeClient, metrics *telemetry.ToolMetrics) {
 	invokeClient = client
+	toolMetrics = metrics
 
 	isDestructive := true
 	notReadOnly := false

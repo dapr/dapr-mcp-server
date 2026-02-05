@@ -8,6 +8,10 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // ActorClient defines the interface for actor operations.
@@ -22,11 +26,27 @@ type InvokeActorMethodArgs struct {
 	Data      string `json:"data" jsonschema:"The payload to pass to the actor method (e.g., order details)."`
 }
 
-var actorClient ActorClient
+var (
+	actorClient ActorClient
+	toolMetrics *telemetry.ToolMetrics
+)
 
 func invokeActorMethodTool(ctx context.Context, req *mcp.CallToolRequest, args InvokeActorMethodArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "invoke_actor", "actors")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "invoke_actor")
 	defer span.End()
+	span.SetAttributes(
+		attribute.String("mcp.tool.name", "invoke_actor"),
+		attribute.String("mcp.tool.package", "actors"),
+		attribute.String("dapr.actor.type", args.ActorType),
+		attribute.String("dapr.actor.id", args.ActorID),
+		attribute.String("dapr.actor.method", args.Method),
+	)
 
 	actorReq := &dapr.InvokeActorRequest{
 		ActorType: args.ActorType,
@@ -37,12 +57,22 @@ func invokeActorMethodTool(ctx context.Context, req *mcp.CallToolRequest, args I
 
 	resp, err := actorClient.InvokeActor(ctx, actorReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.ActorType)
+		}
 		log.Printf("Dapr InvokeActor failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr InvokeActor failed: %w", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.ActorType)
 	}
 
 	resultData := string(resp.Data)
@@ -64,8 +94,9 @@ func invokeActorMethodTool(ctx context.Context, req *mcp.CallToolRequest, args I
 	}, structuredResult, nil
 }
 
-func RegisterTools(server *mcp.Server, client ActorClient) {
+func RegisterTools(server *mcp.Server, client ActorClient, metrics *telemetry.ToolMetrics) {
 	actorClient = client
+	toolMetrics = metrics
 
 	isDestructive := true
 	notReadOnly := false

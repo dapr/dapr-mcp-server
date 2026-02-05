@@ -9,7 +9,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
 // StateClient defines the interface for state operations.
@@ -48,53 +51,88 @@ type ExecuteTransactionArgs struct {
 	Items     []TransactionItem `json:"items" jsonschema:"A list of save and/or delete operations to execute atomically."`
 }
 
-var stateClient StateClient
+var (
+	stateClient StateClient
+	toolMetrics *telemetry.ToolMetrics
+)
 
 func saveStateTool(ctx context.Context, req *mcp.CallToolRequest, args SaveStateArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "save_state", "state")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "save_state")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "save_state"),
-		attribute.String("dapr.store", args.StoreName),
-		attribute.String("dapr.key", args.Key),
+		attribute.String("mcp.tool.name", "save_state"),
+		attribute.String("mcp.tool.package", "state"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.state.key", args.Key),
 	)
 
 	data := []byte(args.Value)
 
-	var err error
-
-	if err = stateClient.SaveState(ctx, args.StoreName, args.Key, data, nil); err == nil {
-		successMessage := fmt.Sprintf("Successfully saved key '%s' to state store '%s'.", args.Key, args.StoreName)
-		log.Println(successMessage)
+	if err := stateClient.SaveState(ctx, args.StoreName, args.Key, data, nil); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
+		toolErrorMessage := fmt.Errorf("failed to save state to store '%s'. Final error: %v", args.StoreName, err).Error()
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: successMessage}},
-		}, map[string]string{"key_saved": args.Key, "store_name": args.StoreName}, nil
+			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
+			IsError: true,
+		}, nil, nil
 	}
-	toolErrorMessage := fmt.Errorf("failed to save state to store '%s'. Final error: %v", args.StoreName, err).Error()
 
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
+	}
+
+	successMessage := fmt.Sprintf("Successfully saved key '%s' to state store '%s'.", args.Key, args.StoreName)
+	log.Println(successMessage)
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
-		IsError: true,
-	}, nil, nil
+		Content: []mcp.Content{&mcp.TextContent{Text: successMessage}},
+	}, map[string]string{"key_saved": args.Key, "store_name": args.StoreName}, nil
 }
 
 func getStateTool(ctx context.Context, req *mcp.CallToolRequest, args GetStateArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "get_state", "state")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "get_state")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "get_state"),
-		attribute.String("dapr.store", args.StoreName),
-		attribute.String("dapr.key", args.Key),
+		attribute.String("mcp.tool.name", "get_state"),
+		attribute.String("mcp.tool.package", "state"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.state.key", args.Key),
 	)
 
 	item, err := stateClient.GetState(ctx, args.StoreName, args.Key, nil)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr GetState failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr GetState failed: %v", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	result := string(item.Value)
@@ -121,21 +159,38 @@ func getStateTool(ctx context.Context, req *mcp.CallToolRequest, args GetStateAr
 }
 
 func deleteStateTool(ctx context.Context, req *mcp.CallToolRequest, args DeleteStateArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "delete_state", "state")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "delete_state")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "delete_state"),
-		attribute.String("dapr.store", args.StoreName),
-		attribute.String("dapr.key", args.Key),
+		attribute.String("mcp.tool.name", "delete_state"),
+		attribute.String("mcp.tool.package", "state"),
+		attribute.String("dapr.component.name", args.StoreName),
+		attribute.String("dapr.state.key", args.Key),
 	)
 
 	if err := stateClient.DeleteState(ctx, args.StoreName, args.Key, nil); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr DeleteState failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr DeleteState failed: %v", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	successMessage := fmt.Sprintf("Successfully deleted key '%s' from state store '%s'.", args.Key, args.StoreName)
@@ -147,11 +202,18 @@ func deleteStateTool(ctx context.Context, req *mcp.CallToolRequest, args DeleteS
 }
 
 func executeTransactionTool(ctx context.Context, req *mcp.CallToolRequest, args ExecuteTransactionArgs) (*mcp.CallToolResult, any, error) {
+	// Start metrics timer
+	var timer *telemetry.Timer
+	if toolMetrics != nil {
+		timer = toolMetrics.StartTimer(ctx, "execute_transaction", "state")
+	}
+
 	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "execute_transaction")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("dapr.operation", "execute_transaction"),
-		attribute.String("dapr.store", args.StoreName),
+		attribute.String("mcp.tool.name", "execute_transaction"),
+		attribute.String("mcp.tool.package", "state"),
+		attribute.String("dapr.component.name", args.StoreName),
 		attribute.Int("dapr.operations_count", len(args.Items)),
 	)
 
@@ -183,12 +245,22 @@ func executeTransactionTool(ctx context.Context, req *mcp.CallToolRequest, args 
 	}
 
 	if err := stateClient.ExecuteStateTransaction(ctx, args.StoreName, meta, ops); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if timer != nil {
+			timer.Stop("error", args.StoreName)
+		}
 		log.Printf("Dapr ExecuteStateTransaction failed: %v", err)
 		toolErrorMessage := fmt.Errorf("dapr ExecuteStateTransaction failed: %v", err).Error()
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
 			IsError: true,
 		}, nil, nil
+	}
+
+	span.SetStatus(codes.Ok, "")
+	if timer != nil {
+		timer.Stop("success", args.StoreName)
 	}
 
 	successMessage := fmt.Sprintf("Successfully executed %d state operations in a transaction on store '%s'.", len(args.Items), args.StoreName)
@@ -199,8 +271,9 @@ func executeTransactionTool(ctx context.Context, req *mcp.CallToolRequest, args 
 	}, map[string]interface{}{"operations_executed": len(args.Items), "store_name": args.StoreName}, nil
 }
 
-func RegisterTools(server *mcp.Server, client StateClient) {
+func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.ToolMetrics) {
 	stateClient = client
+	toolMetrics = metrics
 
 	isReadOnly := true
 	isIdempotent := true

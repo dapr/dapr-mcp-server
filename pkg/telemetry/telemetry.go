@@ -6,13 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -33,6 +36,7 @@ type Config struct {
 type Telemetry struct {
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
+	LoggerProvider *sdklog.LoggerProvider
 	Logger         *slog.Logger
 	shutdown       []func(context.Context) error
 }
@@ -132,6 +136,31 @@ func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
 		}
 	}
 
+	// Initialize logs export
+	if cfg.LogsEnabled {
+		if err := t.initLogs(ctx, cfg, resource); err != nil {
+			t.Logger.Warn("failed to initialize OTEL logs", "error", err)
+		} else {
+			// Wrap the logger with OTEL handler
+			logLevel := slog.LevelInfo
+			switch strings.ToUpper(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")) {
+			case "DEBUG":
+				logLevel = slog.LevelDebug
+			case "WARN", "WARNING":
+				logLevel = slog.LevelWarn
+			case "ERROR":
+				logLevel = slog.LevelError
+			}
+			jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+			otelHandler := NewOTELHandler(t.LoggerProvider, jsonHandler)
+			t.Logger = slog.New(otelHandler).With(
+				"service", cfg.ServiceName,
+				"version", cfg.ServiceVersion,
+			)
+			slog.SetDefault(t.Logger)
+		}
+	}
+
 	return t, nil
 }
 
@@ -195,23 +224,79 @@ func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkre
 	cleanEndpoint := strings.TrimPrefix(metricsEndpoint, "http://")
 	cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
 
+	t.Logger.Debug("creating metrics exporter", "endpoint", cleanEndpoint)
+
 	exporter, err := otlpmetricgrpc.New(ctx,
 		otlpmetricgrpc.WithEndpoint(cleanEndpoint),
 		otlpmetricgrpc.WithHeaders(cfg.Headers),
 		otlpmetricgrpc.WithInsecure(),
 	)
 	if err != nil {
+		t.Logger.Error("failed to create metrics exporter", "error", err)
 		return err
+	}
+
+	// Configure flush interval (default 10s, configurable via env)
+	flushInterval := 10 * time.Second
+	if intervalStr := os.Getenv("OTEL_METRIC_EXPORT_INTERVAL"); intervalStr != "" {
+		if parsed, err := time.ParseDuration(intervalStr); err == nil {
+			flushInterval = parsed
+		}
 	}
 
 	t.MeterProvider = sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(resource),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
+			sdkmetric.WithInterval(flushInterval),
+		)),
 	)
 	otel.SetMeterProvider(t.MeterProvider)
 
 	t.shutdown = append(t.shutdown, t.MeterProvider.Shutdown)
-	t.Logger.Info("metrics initialized", "endpoint", metricsEndpoint)
+	t.Logger.Info("metrics initialized", "endpoint", metricsEndpoint, "flush_interval", flushInterval)
+
+	return nil
+}
+
+// initLogs initializes the OTEL log provider.
+func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresource.Resource) error {
+	logsEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+	if logsEndpoint == "" {
+		logsEndpoint = cfg.Endpoint
+	}
+
+	cleanEndpoint := strings.TrimPrefix(logsEndpoint, "http://")
+	cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
+
+	t.Logger.Debug("creating logs exporter", "endpoint", cleanEndpoint)
+
+	exporter, err := otlploggrpc.New(ctx,
+		otlploggrpc.WithEndpoint(cleanEndpoint),
+		otlploggrpc.WithHeaders(cfg.Headers),
+		otlploggrpc.WithInsecure(),
+	)
+	if err != nil {
+		t.Logger.Error("failed to create logs exporter", "error", err)
+		return err
+	}
+
+	// Configure flush interval (default 5s, configurable via env)
+	flushInterval := 5 * time.Second
+	if intervalStr := os.Getenv("OTEL_LOG_EXPORT_INTERVAL"); intervalStr != "" {
+		if parsed, err := time.ParseDuration(intervalStr); err == nil {
+			flushInterval = parsed
+		}
+	}
+
+	t.LoggerProvider = sdklog.NewLoggerProvider(
+		sdklog.WithResource(resource),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter,
+			sdklog.WithExportInterval(flushInterval),
+		)),
+	)
+
+	t.shutdown = append(t.shutdown, t.LoggerProvider.Shutdown)
+	t.Logger.Info("logs exporter initialized", "endpoint", logsEndpoint, "flush_interval", flushInterval)
 
 	return nil
 }

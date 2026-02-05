@@ -16,7 +16,7 @@ func TestHTTPMiddleware(t *testing.T) {
 	})
 
 	// Wrap with middleware
-	handler := HTTPMiddleware(nextHandler)
+	handler := HTTPMiddleware(nextHandler, nil, nil)
 
 	// Create request
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -38,7 +38,7 @@ func TestHTTPMiddlewareWithTraceContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := HTTPMiddleware(nextHandler)
+	handler := HTTPMiddleware(nextHandler, nil, nil)
 
 	// Create request with trace headers
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -129,7 +129,7 @@ func TestHTTPMiddlewarePreservesMethod(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			handler := HTTPMiddleware(nextHandler)
+			handler := HTTPMiddleware(nextHandler, nil, nil)
 			req := httptest.NewRequest(method, "/test", nil)
 			rec := httptest.NewRecorder()
 
@@ -156,7 +156,7 @@ func TestHTTPMiddlewarePreservesPath(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			handler := HTTPMiddleware(nextHandler)
+			handler := HTTPMiddleware(nextHandler, nil, nil)
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
 
