@@ -34,7 +34,7 @@ EXPOSE 8080
 
 # Health check using built-in health endpoints
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/dapr-mcp-server", "--health-check"] || exit 1
+    CMD ["/dapr-mcp-server", "--health-check"]
 
 ENTRYPOINT ["/dapr-mcp-server"]
 

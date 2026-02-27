@@ -281,7 +281,7 @@ Add to your Claude Desktop configuration:
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - Dapr CLI
 - Docker (optional, for local testing)
 
@@ -302,6 +302,17 @@ go test -v -race ./...
 ```bash
 golangci-lint run
 ```
+
+## Cryptography Setup
+
+The cryptography tools require an RSA key pair. Generate one with:
+
+```bash
+mkdir -p keys
+openssl genpkey -algorithm RSA -out keys/rsa-private-key.pem -pkeyopt rsa_keygen_bits:4096
+```
+
+Then update `components/cryptography.yaml` to point to your key directory.
 
 ## Architecture
 

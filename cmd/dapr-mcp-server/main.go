@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	dapr "github.com/dapr/go-sdk/client"
@@ -34,8 +36,9 @@ var (
 	// Version is set at build time via -ldflags
 	Version = "dev"
 
-	httpAddr   = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
-	DaprClient dapr.Client
+	httpAddr    = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	healthCheck = flag.Bool("health-check", false, "run a health check against the running server and exit")
+	DaprClient  dapr.Client
 )
 
 func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
@@ -63,8 +66,45 @@ func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
 	return fmt.Errorf("failed to create Dapr client after %d attempts: %w", maxRetries, err)
 }
 
+func corsMiddleware(next http.Handler) http.Handler {
+	origin := os.Getenv("DAPR_MCP_CORS_ORIGIN")
+	if origin == "" {
+		origin = "*"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version")
+		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	flag.Parse()
+
+	// Health check mode: probe the running server and exit
+	if *healthCheck {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:8080/livez", nil)
+		if err != nil {
+			os.Exit(1)
+		}
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // health check against localhost only
+		if err != nil {
+			os.Exit(1)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Initialize structured logging
 	logLevel := os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")
@@ -86,7 +126,8 @@ func main() {
 		"version", Version,
 	)
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// Initialize OpenTelemetry
 	shutdown, err := telemetry.Initialize(ctx)
@@ -96,7 +137,9 @@ func main() {
 		)
 	} else {
 		defer func() {
-			if shutdownErr := shutdown(ctx); shutdownErr != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if shutdownErr := shutdown(shutdownCtx); shutdownErr != nil {
 				slog.Error("Error shutting down telemetry", "error", shutdownErr)
 			}
 		}()
@@ -126,6 +169,7 @@ func main() {
 		logger.Error("Fatal error: could not initialize Dapr client", "error", initErr)
 		os.Exit(1)
 	}
+	defer DaprClient.Close()
 
 	// Build server instructions
 	var instructions strings.Builder
@@ -140,9 +184,8 @@ func main() {
 	instructions.WriteString("Consult the tool's Description for specific component rules (e.g., key formatting, security warnings).\n")
 
 	opts := &mcp.ServerOptions{
-		Instructions:      instructions.String(),
-		CompletionHandler: complete,
-		HasTools:          true,
+		Instructions: instructions.String(),
+		HasTools:     true,
 	}
 	logger.Debug("Server instructions configured", "instructions", instructions.String())
 
@@ -240,16 +283,14 @@ func main() {
 		mux.HandleFunc("/readyz", healthChecker.ReadinessHandler)
 		mux.HandleFunc("/startupz", healthChecker.StartupHandler)
 
-		// Create MCP SSE handler
-		mcpHandler := mcp.NewSSEHandler(func(request *http.Request) *mcp.Server {
+		// Create MCP Streamable HTTP handler
+		mcpHandler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 			return server
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{})
 
 		// Wrap with telemetry (outer) and auth (inner) middleware
 		// Telemetry must be outer so metrics are recorded for ALL requests including auth failures
-		wrappedMCPHandler := telemetry.HTTPMiddleware(authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mcpHandler.ServeHTTP(w, r)
-		})), logger, httpMetrics)
+		wrappedMCPHandler := telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics)
 
 		// Handle Dapr subscription endpoint
 		mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {
@@ -260,22 +301,35 @@ func main() {
 		// Route all other requests to MCP handler
 		mux.Handle("/", wrappedMCPHandler)
 
-		logger.Info("MCP HTTP server starting",
-			"address", *httpAddr,
-			"auth_enabled", authConfig.Enabled,
-		)
 		srv := &http.Server{
 			Addr:              *httpAddr,
-			Handler:           mux,
+			Handler:           corsMiddleware(mux),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
-		if err := srv.ListenAndServe(); err != nil {
-			logger.Error("Server failed", "error", err)
-			os.Exit(1)
+
+		go func() {
+			logger.Info("MCP HTTP server starting",
+				"address", *httpAddr,
+				"auth_enabled", authConfig.Enabled,
+			)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("Server failed", "error", err)
+				os.Exit(1)
+			}
+		}()
+
+		<-ctx.Done()
+		logger.Info("Shutdown signal received, draining connections...")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("Server shutdown error", "error", err)
 		}
+		logger.Info("Server stopped gracefully")
 	} else {
 		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
-		if err := server.Run(context.Background(), t); err != nil {
+		if err := server.Run(ctx, t); err != nil {
 			logger.Error("Server failed", "error", err)
 			os.Exit(1)
 		}
@@ -364,13 +418,4 @@ func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logg
 
 	logger.Info("Authenticators initialized", "count", len(authenticators))
 	return authenticators, nil
-}
-
-func complete(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
-	return &mcp.CompleteResult{
-		Completion: mcp.CompletionResultDetails{
-			Total:  1,
-			Values: []string{req.Params.Argument.Value + "x"},
-		},
-	}, nil
 }

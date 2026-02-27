@@ -11,7 +11,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -95,6 +97,20 @@ func parseHeaders(headersStr string) map[string]string {
 		}
 	}
 	return headers
+}
+
+// resolveProtocol resolves the OTLP protocol for a specific signal.
+// It checks the signal-specific env var first, then the global OTEL_EXPORTER_OTLP_PROTOCOL,
+// and defaults to "grpc".
+func resolveProtocol(signalEnv string) string {
+	protocol := os.Getenv(signalEnv)
+	if protocol == "" {
+		protocol = os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+	}
+	if protocol == "" {
+		protocol = "grpc"
+	}
+	return protocol
 }
 
 // Init initializes OpenTelemetry with the given configuration.
@@ -221,16 +237,33 @@ func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkre
 		metricsEndpoint = cfg.Endpoint
 	}
 
-	cleanEndpoint := strings.TrimPrefix(metricsEndpoint, "http://")
-	cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
+	protocol := resolveProtocol("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
 
-	t.Logger.Debug("creating metrics exporter", "endpoint", cleanEndpoint)
+	var exporter sdkmetric.Exporter
+	var err error
 
-	exporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(cleanEndpoint),
-		otlpmetricgrpc.WithHeaders(cfg.Headers),
-		otlpmetricgrpc.WithInsecure(),
-	)
+	switch protocol {
+	case "http/protobuf", "http/json":
+		endpoint := metricsEndpoint
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			endpoint = "http://" + endpoint
+		}
+		t.Logger.Debug("creating metrics exporter", "endpoint", endpoint, "protocol", protocol)
+		exporter, err = otlpmetrichttp.New(ctx,
+			otlpmetrichttp.WithEndpoint(endpoint),
+			otlpmetrichttp.WithHeaders(cfg.Headers),
+		)
+	default:
+		cleanEndpoint := strings.TrimPrefix(metricsEndpoint, "http://")
+		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
+		t.Logger.Debug("creating metrics exporter", "endpoint", cleanEndpoint, "protocol", protocol)
+		exporter, err = otlpmetricgrpc.New(ctx,
+			otlpmetricgrpc.WithEndpoint(cleanEndpoint),
+			otlpmetricgrpc.WithHeaders(cfg.Headers),
+			otlpmetricgrpc.WithInsecure(),
+		)
+	}
+
 	if err != nil {
 		t.Logger.Error("failed to create metrics exporter", "error", err)
 		return err
@@ -265,16 +298,33 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 		logsEndpoint = cfg.Endpoint
 	}
 
-	cleanEndpoint := strings.TrimPrefix(logsEndpoint, "http://")
-	cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
+	protocol := resolveProtocol("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL")
 
-	t.Logger.Debug("creating logs exporter", "endpoint", cleanEndpoint)
+	var exporter sdklog.Exporter
+	var err error
 
-	exporter, err := otlploggrpc.New(ctx,
-		otlploggrpc.WithEndpoint(cleanEndpoint),
-		otlploggrpc.WithHeaders(cfg.Headers),
-		otlploggrpc.WithInsecure(),
-	)
+	switch protocol {
+	case "http/protobuf", "http/json":
+		endpoint := logsEndpoint
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			endpoint = "http://" + endpoint
+		}
+		t.Logger.Debug("creating logs exporter", "endpoint", endpoint, "protocol", protocol)
+		exporter, err = otlploghttp.New(ctx,
+			otlploghttp.WithEndpoint(endpoint),
+			otlploghttp.WithHeaders(cfg.Headers),
+		)
+	default:
+		cleanEndpoint := strings.TrimPrefix(logsEndpoint, "http://")
+		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
+		t.Logger.Debug("creating logs exporter", "endpoint", cleanEndpoint, "protocol", protocol)
+		exporter, err = otlploggrpc.New(ctx,
+			otlploggrpc.WithEndpoint(cleanEndpoint),
+			otlploggrpc.WithHeaders(cfg.Headers),
+			otlploggrpc.WithInsecure(),
+		)
+	}
+
 	if err != nil {
 		t.Logger.Error("failed to create logs exporter", "error", err)
 		return err

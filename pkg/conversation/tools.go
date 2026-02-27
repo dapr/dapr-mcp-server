@@ -162,28 +162,28 @@ func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseAr
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&result,
 		"LLM Conversation completed successfully with component '%s'.\n",
 		args.Name,
-	))
+	)
 
 	for i, choice := range lastOutput.Choices {
 		if choice.Message == nil {
 			continue
 		}
 
-		result.WriteString(fmt.Sprintf("\n--- Choice %d ---\n", i))
+		fmt.Fprintf(&result, "\n--- Choice %d ---\n", i)
 
 		if len(choice.Message.ToolCalls) > 0 {
-			result.WriteString(fmt.Sprintf("Status: **TOOL CALL** (Reason: %s)\n", choice.FinishReason))
+			fmt.Fprintf(&result, "Status: **TOOL CALL** (Reason: %s)\n", choice.FinishReason)
 
 			toolCallsJson, _ := json.MarshalIndent(choice.Message.ToolCalls, "", "  ")
-			result.WriteString(fmt.Sprintf("Tool Calls:\n%s\n", toolCallsJson))
+			fmt.Fprintf(&result, "Tool Calls:\n%s\n", toolCallsJson)
 		}
 
 		if choice.Message.Content != "" {
-			result.WriteString(fmt.Sprintf("Status: **MESSAGE** (Reason: %s)\n", choice.FinishReason))
-			result.WriteString(fmt.Sprintf("Response Content:\n%s\n", choice.Message.Content))
+			fmt.Fprintf(&result, "Status: **MESSAGE** (Reason: %s)\n", choice.FinishReason)
+			fmt.Fprintf(&result, "Response Content:\n%s\n", choice.Message.Content)
 		}
 	}
 

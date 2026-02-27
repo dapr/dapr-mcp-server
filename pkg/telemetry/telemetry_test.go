@@ -260,3 +260,64 @@ func TestInitialize(t *testing.T) {
 	err = shutdown(context.Background())
 	assert.NoError(t, err)
 }
+
+func TestResolveProtocol(t *testing.T) {
+	tests := []struct {
+		name      string
+		signalEnv string
+		signalVal string
+		globalVal string
+		expected  string
+	}{
+		{
+			name:      "signal-specific override",
+			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+			signalVal: "http/protobuf",
+			globalVal: "grpc",
+			expected:  "http/protobuf",
+		},
+		{
+			name:      "falls back to global",
+			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+			signalVal: "",
+			globalVal: "http/protobuf",
+			expected:  "http/protobuf",
+		},
+		{
+			name:      "defaults to grpc",
+			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+			signalVal: "",
+			globalVal: "",
+			expected:  "grpc",
+		},
+		{
+			name:      "logs signal override",
+			signalEnv: "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+			signalVal: "http/json",
+			globalVal: "grpc",
+			expected:  "http/json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Unsetenv(tt.signalEnv)
+			os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+
+			if tt.signalVal != "" {
+				os.Setenv(tt.signalEnv, tt.signalVal)
+			}
+			if tt.globalVal != "" {
+				os.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", tt.globalVal)
+			}
+
+			defer func() {
+				os.Unsetenv(tt.signalEnv)
+				os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+			}()
+
+			result := resolveProtocol(tt.signalEnv)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

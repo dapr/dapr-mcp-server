@@ -27,6 +27,11 @@ go.work.sum
 # env file
 .env
 
+# Cryptographic keys
+components/keys/
+keys/
+*.pem
+
 # Editor/IDE
 # .idea/
 # .vscode/
