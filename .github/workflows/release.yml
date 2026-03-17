@@ -92,7 +92,7 @@ jobs:
             ./cmd/dapr-mcp-server
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dapr-mcp-server-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dapr-mcp-server-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -218,7 +218,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy scan results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-results
           path: trivy-results.sarif
