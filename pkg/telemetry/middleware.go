@@ -125,6 +125,17 @@ func (w *ResponseWriterWrapper) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush implements http.Flusher by delegating to the underlying ResponseWriter.
+// This is critical for SSE (text/event-stream) responses used by the MCP
+// Streamable HTTP transport. Without this, Go buffers the entire response,
+// sets Content-Length and Connection: keep-alive, which causes MCP clients
+// to block waiting for more events that never arrive.
+func (w *ResponseWriterWrapper) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // Unwrap returns the original ResponseWriter.
 func (w *ResponseWriterWrapper) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
