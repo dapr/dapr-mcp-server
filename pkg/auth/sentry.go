@@ -374,7 +374,7 @@ func (a *DaprSentryAuthenticator) refreshJWKS(ctx context.Context) error {
 		"url", a.config.JWKSUrl,
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.config.JWKSUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.config.JWKSUrl, nil) //nolint:gosec // URL is from trusted server config, not user input
 	if err != nil {
 		a.logger.Debug("[SENTRY-AUTH] failed to create JWKS request",
 			"error", err,
