@@ -1,0 +1,118 @@
+name: Bug report
+description: Report a bug in dapr-mcp-server
+title: "[Bug]: "
+labels: ["kind/bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        **Do not open a public issue to report a security vulnerability.** Please follow the [Dapr security policy](https://docs.dapr.io/operations/support/support-security-issues/) instead.
+
+        Before filing, please search [existing issues](https://github.com/dapr/dapr-mcp-server/issues) to avoid duplicates.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of dapr-mcp-server is affected? Select all that apply.
+      multiple: true
+      options:
+        - actors
+        - auth (OIDC / SPIFFE / Sentry / hybrid)
+        - bindings
+        - ci/release
+        - conversation
+        - crypto
+        - docs
+        - health
+        - invoke
+        - lock
+        - metadata
+        - pubsub
+        - secrets
+        - state
+        - telemetry
+        - transport (stdio / SSE / HTTP)
+        - workflow
+        - other
+    validations:
+      required: true
+  - type: input
+    id: mcp-version
+    attributes:
+      label: dapr-mcp-server version
+      description: Release tag or commit SHA (e.g., `v0.3.0`, `7a4ef7c`).
+      placeholder: "v0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: dapr-version
+    attributes:
+      label: Dapr runtime version
+      description: Output of `dapr --version` (runtime version line).
+      placeholder: "1.14.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: MCP transport
+      description: Which transport were you using when the bug occurred?
+      options:
+        - stdio
+        - SSE
+        - HTTP (streamable)
+        - other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS / architecture / deployment target (e.g., macOS arm64 local, Linux amd64 Kubernetes 1.29).
+      placeholder: "Linux amd64, Kubernetes 1.29"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps a maintainer can follow to reproduce the bug. Include Dapr component YAML and MCP client config where relevant.
+      placeholder: |
+        1. Start Dapr sidecar with `dapr run ...`
+        2. Start dapr-mcp-server with `./dapr-mcp-server --transport sse`
+        3. Call tool `state_save` with payload `...`
+        4. Observe error `...`
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace
+      description: Paste relevant logs, stack traces, or error output. Redact any secrets before submitting.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: release-note
+    attributes:
+      label: Release note
+      description: One-line summary for the release notes (populate later if unsure). Example `**FIX** Panic when SSE client disconnects mid-stream.`
+      placeholder: "**FIX** ..."
+    validations:
+      required: false

@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose a new feature or enhancement for dapr-mcp-server
+title: "[Feature]: "
+labels: ["kind/enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature.
+
+        Please search [existing issues](https://github.com/dapr/dapr-mcp-server/issues) first to avoid duplicates. For broader Dapr runtime or API changes, consider opening an issue against [dapr/dapr](https://github.com/dapr/dapr) instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of dapr-mcp-server does this feature touch? Select all that apply.
+      multiple: true
+      options:
+        - actors
+        - auth (OIDC / SPIFFE / Sentry / hybrid)
+        - bindings
+        - ci/release
+        - conversation
+        - crypto
+        - docs
+        - health
+        - invoke
+        - lock
+        - metadata
+        - pubsub
+        - secrets
+        - state
+        - telemetry
+        - transport (stdio / SSE / HTTP)
+        - workflow
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the feature
+      description: What is the feature? What problem does it solve? Please include business value or the use case motivating the request.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: (Optional) Sketch an implementation approach, API shape, or tool schema. Helps reviewers assess feasibility.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: (Optional) What other approaches have you considered, and why does this one win?
+    validations:
+      required: false
+  - type: input
+    id: release-note
+    attributes:
+      label: Release note
+      description: One-line summary for the release notes (populate later if unsure). Example `**ADD** New MCP tool for workflow suspension.`
+      placeholder: "**ADD** ..."
+    validations:
+      required: false

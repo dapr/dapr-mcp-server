@@ -1,0 +1,44 @@
+name: Question
+description: Ask a question about dapr-mcp-server
+title: "[Question]: "
+labels: ["kind/question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Looking for a quick answer?** The [Dapr Discord](https://aka.ms/dapr-discord) is usually the fastest channel for community support.
+
+        Please search [existing issues](https://github.com/dapr/dapr-mcp-server/issues) and the [Dapr docs](https://docs.dapr.io/) before opening a new question.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of dapr-mcp-server is your question about?
+      options:
+        - actors
+        - auth (OIDC / SPIFFE / Sentry / hybrid)
+        - bindings
+        - ci/release
+        - conversation
+        - crypto
+        - docs
+        - health
+        - invoke
+        - lock
+        - metadata
+        - pubsub
+        - secrets
+        - state
+        - telemetry
+        - transport (stdio / SSE / HTTP)
+        - workflow
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Ask your question here. Include any relevant context (version, transport, environment, what you've already tried).
+    validations:
+      required: true
