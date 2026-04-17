@@ -197,7 +197,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.event.inputs.prerelease == 'false' }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
