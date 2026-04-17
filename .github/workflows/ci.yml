@@ -72,7 +72,7 @@ jobs:
             ./cmd/dapr-mcp-server
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dapr-mcp-server-linux-amd64
           path: dapr-mcp-server-linux-amd64
