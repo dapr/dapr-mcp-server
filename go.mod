@@ -1,11 +1,11 @@
 module github.com/dapr/dapr-mcp-server
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/dapr/dapr v1.17.3
-	github.com/dapr/go-sdk v1.14.2
+	github.com/dapr/dapr v1.18.2
+	github.com/dapr/go-sdk v1.15.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.0
@@ -33,8 +33,8 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dapr/durabletask-go v0.11.3 // indirect
-	github.com/dapr/kit v0.17.0 // indirect
+	github.com/dapr/durabletask-go v0.12.2-0.20260720132056-79042da5fe61 // indirect
+	github.com/dapr/kit v0.18.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -51,7 +51,7 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
