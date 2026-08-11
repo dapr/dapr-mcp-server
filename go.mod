@@ -3,7 +3,7 @@ module github.com/dapr/dapr-mcp-server
 go 1.26.5
 
 require (
-	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/dapr/dapr v1.18.2
 	github.com/dapr/go-sdk v1.15.0
 	github.com/go-jose/go-jose/v4 v4.1.4
