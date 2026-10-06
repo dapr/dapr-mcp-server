@@ -82,7 +82,7 @@ func getSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetSecret
 		timer.Stop("success", args.StoreName)
 	}
 
-	var secretKeys []string
+	secretKeys := make([]string, 0, len(secrets))
 	for key := range secrets {
 		secretKeys = append(secretKeys, key)
 	}
@@ -146,7 +146,7 @@ func getBulkSecretTool(ctx context.Context, req *mcp.CallToolRequest, args GetBu
 		timer.Stop("success", args.StoreName)
 	}
 
-	var secretNames []string
+	secretNames := make([]string, 0, len(secretsBulk))
 	for name := range secretsBulk {
 		secretNames = append(secretNames, name)
 	}

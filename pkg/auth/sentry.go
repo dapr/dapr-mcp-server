@@ -302,7 +302,7 @@ func (a *DaprSentryAuthenticator) getSigningKey(ctx context.Context, keyID strin
 	}
 
 	// Log available keys
-	var availableKeyIDs []string
+	availableKeyIDs := make([]string, 0, len(jwks.Keys))
 	for _, k := range jwks.Keys {
 		availableKeyIDs = append(availableKeyIDs, k.KeyID)
 	}
