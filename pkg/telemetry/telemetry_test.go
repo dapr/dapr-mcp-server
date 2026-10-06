@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
 
@@ -318,6 +319,28 @@ func TestResolveProtocol(t *testing.T) {
 
 			result := resolveProtocol(tt.signalEnv)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  slog.Level
+	}{
+		{name: "empty defaults to info", input: "", want: slog.LevelInfo},
+		{name: "unknown defaults to info", input: "verbose", want: slog.LevelInfo},
+		{name: "debug", input: "DEBUG", want: slog.LevelDebug},
+		{name: "case insensitive", input: "debug", want: slog.LevelDebug},
+		{name: "warn", input: "WARN", want: slog.LevelWarn},
+		{name: "warning alias", input: "warning", want: slog.LevelWarn},
+		{name: "error", input: "ERROR", want: slog.LevelError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ParseLogLevel(tt.input))
 		})
 	}
 }

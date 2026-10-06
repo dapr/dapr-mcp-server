@@ -1,4 +1,0 @@
-dapr-agents==0.10.7
-starlette==0.47.2
-websockets>=12.0
-

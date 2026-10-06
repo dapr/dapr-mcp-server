@@ -34,7 +34,7 @@ All commands assume the repo root is the working directory.
 | Run with coverage (CI mirror) | `go test -race -coverprofile=coverage.out -covermode=atomic ./pkg/...` |
 | Coverage summary | `go tool cover -func=coverage.out` |
 | Lint | `golangci-lint run ./...` (config in `.golangci.yml`, gosec + staticcheck + govet among others) |
-| Integration tests (Python) | `cd test && pip install -r requirements.txt && python app.py` (needs a running `dapr-mcp-server` + Dapr sidecar) |
+| Integration tests (Python) | `cd test && uv sync && uv run python app.py` (needs a running `dapr-mcp-server` + Dapr sidecar) |
 
 Minimum coverage threshold expected by reviewers: no hard gate in CI but aim for parity with siblings (see `./pkg/state` as an exemplar).
 
@@ -45,8 +45,8 @@ Tools live per capability under `pkg/<capability>/`. Pattern:
 1. Create (or edit) `pkg/<capability>/tools.go`. Define the input struct with `json` + `jsonschema` tags, then register with `server.AddTool` inside a `RegisterTools(server *mcp.Server, client dapr.Client, metrics *telemetry.ToolMetrics)` function.
 2. Write table-driven tests in `pkg/<capability>/tools_test.go` using the `mocks/` stubs.
 3. Wire into `cmd/dapr-mcp-server/main.go`:
-   - If the tool is **core** (always registered), add an unconditional call near lines 195–197 alongside `metadata.RegisterTools`, `invoke.RegisterTools`, `actor.RegisterTools`.
-   - If the tool is **conditional on a Dapr component**, extend the component-presence detection block (lines 206–222) and the conditional registration block (lines 226–246). Use the Dapr component type prefix (e.g. `state.`, `pubsub.`, `lock.`).
+   - If the tool is **core** (always registered), add an unconditional call at the top of `registerTools` alongside `metadata.RegisterTools`, `invoke.RegisterTools`, `actor.RegisterTools`.
+   - If the tool is **conditional on a Dapr component**, extend the component-presence `switch` and the conditional registration block in `registerTools`. Use the Dapr component type prefix (e.g. `state.`, `pubsub.`, `lock.`).
 4. Update tool metadata and documentation:
    - Add the tool row to the README's status table.
    - Add a section to the dapr/docs tool reference.

@@ -36,3 +36,6 @@ keys/
 # .idea/
 # .vscode/
 .DS_Store
+
+# Python
+.venv/

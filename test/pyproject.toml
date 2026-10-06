@@ -1,0 +1,10 @@
+[project]
+name = "dapr-mcp-test"
+version = "0.1.0"
+description = "Test app for dapr-mcp"
+requires-python = ">=3.11"
+dependencies = [
+    "dapr-agents>=1.0.3,<2.0.0",
+    "starlette==0.47.2",
+    "websockets>=12.0",
+]

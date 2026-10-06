@@ -158,15 +158,7 @@ func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
 			t.Logger.Warn("failed to initialize OTEL logs", "error", err)
 		} else {
 			// Wrap the logger with OTEL handler
-			logLevel := slog.LevelInfo
-			switch strings.ToUpper(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")) {
-			case "DEBUG":
-				logLevel = slog.LevelDebug
-			case "WARN", "WARNING":
-				logLevel = slog.LevelWarn
-			case "ERROR":
-				logLevel = slog.LevelError
-			}
+			logLevel := ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL"))
 			jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
 			otelHandler := NewOTELHandler(t.LoggerProvider, jsonHandler)
 			t.Logger = slog.New(otelHandler).With(
@@ -352,19 +344,24 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 }
 
 // initLogger initializes the structured logger.
-func initLogger(cfg Config) *slog.Logger {
-	level := slog.LevelInfo
-	switch strings.ToUpper(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")) {
+// ParseLogLevel maps a case-insensitive level name to a slog.Level,
+// defaulting to Info for empty or unrecognized names.
+func ParseLogLevel(name string) slog.Level {
+	switch strings.ToUpper(name) {
 	case "DEBUG":
-		level = slog.LevelDebug
+		return slog.LevelDebug
 	case "WARN", "WARNING":
-		level = slog.LevelWarn
+		return slog.LevelWarn
 	case "ERROR":
-		level = slog.LevelError
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
+}
 
+func initLogger(cfg Config) *slog.Logger {
 	opts := &slog.HandlerOptions{
-		Level: level,
+		Level: ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
 	}
 
 	handler := slog.NewJSONHandler(os.Stdout, opts)

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -32,6 +34,15 @@ import (
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
+const (
+	daprClientMaxAttempts = 5
+	daprClientRetryDelay  = 2 * time.Second
+	readHeaderTimeout     = 10 * time.Second
+	httpShutdownTimeout   = 15 * time.Second
+	telemetryFlushTimeout = 10 * time.Second
+	healthCheckURL        = "http://localhost:8080/livez"
+)
+
 var (
 	// Version is set at build time via -ldflags
 	Version = "dev"
@@ -41,29 +52,209 @@ var (
 	DaprClient  dapr.Client
 )
 
+func main() {
+	flag.Parse()
+
+	if *healthCheck {
+		if err := runHealthCheck(); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: telemetry.ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
+	}))
+	slog.SetDefault(logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx, logger)
+	stop()
+	if err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+// runHealthCheck probes the liveness endpoint of a locally running server.
+func runHealthCheck() error {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthCheckURL, nil)
+	if err != nil {
+		return fmt.Errorf("build health check request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // health check against localhost only
+	if err != nil {
+		return fmt.Errorf("health check request: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// run wires up the server and blocks until ctx is canceled or the server fails.
+// Returning an error instead of calling os.Exit lets the deferred cleanup run.
+func run(ctx context.Context, logger *slog.Logger) error {
+	logger.Info("Starting dapr-mcp-server", "version", Version)
+
+	shutdownTelemetry, err := telemetry.Initialize(ctx)
+	if err != nil {
+		logger.Warn("Failed to initialize telemetry, continuing without observability", "error", err)
+	} else {
+		defer func() {
+			// ctx is already canceled by the time we get here on a signal,
+			// so flush with a fresh context.
+			flushCtx, cancel := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+			defer cancel()
+			if flushErr := shutdownTelemetry(flushCtx); flushErr != nil {
+				slog.Error("Error shutting down telemetry", "error", flushErr)
+			}
+		}()
+		// Switch to the OTEL-wrapped logger that was set as default
+		logger = slog.Default()
+		logger.Info("OpenTelemetry initialized successfully")
+	}
+
+	toolMetrics, err := telemetry.NewToolMetrics()
+	if err != nil {
+		logger.Warn("Failed to initialize tool metrics", "error", err)
+	}
+
+	httpMetrics, err := telemetry.NewHTTPMetrics()
+	if err != nil {
+		logger.Warn("Failed to initialize HTTP metrics", "error", err)
+	}
+
+	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+	otel.SetTextMapPropagator(prop)
+
+	if err = initializeDaprClient(ctx, logger); err != nil {
+		return fmt.Errorf("initialize dapr client: %w", err)
+	}
+	defer DaprClient.Close()
+
+	instructions := buildInstructions()
+	logger.Debug("Server instructions configured", "instructions", instructions)
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
+		Instructions: instructions,
+		HasTools:     true,
+	})
+
+	if err = registerTools(ctx, server, toolMetrics, logger); err != nil {
+		return fmt.Errorf("register tools: %w", err)
+	}
+
+	if *httpAddr == "" {
+		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
+		if err = server.Run(ctx, t); err != nil {
+			return fmt.Errorf("stdio server: %w", err)
+		}
+		return nil
+	}
+
+	healthChecker := health.NewHandler(DaprClient, Version)
+	handler, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
+	if err != nil {
+		return err
+	}
+	return serveHTTP(ctx, *httpAddr, handler, healthChecker, logger)
+}
+
 func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
-	const maxRetries = 5
-	const retryDelay = 2 * time.Second
-
-	var err error
-
-	for i := 0; i < maxRetries; i++ {
-		DaprClient, err = dapr.NewClient()
+	for attempt := 1; ; attempt++ {
+		client, err := dapr.NewClient()
 		if err == nil {
+			DaprClient = client
 			logger.Info("Dapr client established successfully")
 			return nil
 		}
+		if attempt == daprClientMaxAttempts {
+			return fmt.Errorf("failed to create Dapr client after %d attempts: %w", attempt, err)
+		}
 		logger.Warn("Dapr client initialization failed",
-			"attempt", i+1,
-			"max_retries", maxRetries,
+			"attempt", attempt,
+			"max_attempts", daprClientMaxAttempts,
 			"error", err,
 		)
 
-		if i < maxRetries-1 {
-			time.Sleep(retryDelay)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting to retry Dapr client: %w", ctx.Err())
+		case <-time.After(daprClientRetryDelay):
 		}
 	}
-	return fmt.Errorf("failed to create Dapr client after %d attempts: %w", maxRetries, err)
+}
+
+func buildInstructions() string {
+	var b strings.Builder
+	b.WriteString("You are an expert AI assistant for Dapr microservices. Your role is to translate user requests into precise, deterministic, and safe Dapr MCP tool calls.\n\n")
+	b.WriteString("### Global Safety Rules\n")
+	b.WriteString("- **Clarity Before Acting**: If ANY required argument is missing (store name, key, topic, etc.), you **MUST run the get_components tool to enrich the information before proceeding**. If arguments are still missing first try the tool with sensible defaults, if this fails ask the user for clarification.\n")
+	b.WriteString("- **Serialization**: Metadata fields MUST be a dictionary/map (e.g., `{}`) and NEVER a quoted string (e.g., `\"{}\"`).\n")
+	b.WriteString("- **Multi-Step Workflow**: When multiple operations are requested, execute them sequentially — **one tool call at a time**.\n")
+	b.WriteString("- **Forbidden Actions**: NEVER invent component names, keys, topics, or cryptographic parameters.\n\n")
+	b.WriteString("### Tool Call Validity\n")
+	b.WriteString("Consult the tool's Description for specific component rules (e.g., key formatting, security warnings).\n")
+	return b.String()
+}
+
+// registerTools registers the core tools and then the tools for each
+// building block that has at least one component loaded in the sidecar.
+func registerTools(ctx context.Context, server *mcp.Server, toolMetrics *telemetry.ToolMetrics, logger *slog.Logger) error {
+	metadata.RegisterTools(server, DaprClient, toolMetrics)
+	invoke.RegisterTools(server, DaprClient, toolMetrics)
+	actor.RegisterTools(server, DaprClient, toolMetrics)
+
+	components, err := metadata.GetLiveComponentList(ctx, DaprClient)
+	if err != nil {
+		return fmt.Errorf("get components: %w", err)
+	}
+
+	present := make(map[string]bool)
+	for _, c := range components {
+		switch {
+		case strings.HasPrefix(c.Type, "state."):
+			present["state"] = true
+		case strings.HasPrefix(c.Type, "pubsub."):
+			present["pubsub"] = true
+		case strings.HasPrefix(c.Type, "bindings."):
+			present["bindings"] = true
+		case strings.HasPrefix(c.Type, "secretstores."):
+			present["secrets"] = true
+		case strings.HasPrefix(c.Type, "lock."):
+			present["lock"] = true
+		case strings.HasPrefix(c.Type, "conversation."):
+			present["conversation"] = true
+		case strings.HasPrefix(c.Type, "crypto."):
+			present["crypto"] = true
+		}
+	}
+	logger.Info("Discovered Dapr components", "components", present)
+
+	if present["pubsub"] {
+		pubsub.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["bindings"] {
+		binding.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["state"] {
+		state.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["secrets"] {
+		secret.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["conversation"] {
+		conversation.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["crypto"] {
+		crypto.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	if present["lock"] {
+		lock.RegisterTools(server, DaprClient, toolMetrics)
+	}
+	return nil
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -86,254 +277,90 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func main() {
-	flag.Parse()
-
-	// Health check mode: probe the running server and exit
-	if *healthCheck {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:8080/livez", nil)
-		if err != nil {
-			os.Exit(1)
-		}
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec // health check against localhost only
-		if err != nil {
-			os.Exit(1)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			os.Exit(1)
-		}
-		os.Exit(0)
+func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, error) {
+	authConfig := auth.DefaultConfig()
+	if err := authConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid authentication configuration: %w", err)
 	}
 
-	// Initialize structured logging
-	logLevel := os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")
-	var level slog.Level
-	switch strings.ToUpper(logLevel) {
-	case "DEBUG":
-		level = slog.LevelDebug
-	case "WARN":
-		level = slog.LevelWarn
-	case "ERROR":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	slog.SetDefault(logger)
-
-	logger.Info("Starting dapr-mcp-server",
-		"version", Version,
-	)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// Initialize OpenTelemetry
-	shutdown, err := telemetry.Initialize(ctx)
-	if err != nil {
-		logger.Warn("Failed to initialize telemetry, continuing without observability",
-			"error", err,
+	authMiddleware := auth.NoopMiddleware
+	if authConfig.Enabled && authConfig.Mode != auth.ModeDisabled {
+		logger.Info("Starting authentication initialization", "mode", authConfig.Mode)
+		authenticators, err := buildAuthenticators(ctx, authConfig, logger)
+		if err != nil {
+			return nil, fmt.Errorf("initialize authenticators: %w", err)
+		}
+		authMiddleware = auth.NewMiddleware(authConfig, authenticators, logger).Handler
+		logger.Info("Authentication enabled",
+			"mode", authConfig.Mode,
+			"skip_paths", authConfig.SkipPaths,
 		)
 	} else {
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if shutdownErr := shutdown(shutdownCtx); shutdownErr != nil {
-				slog.Error("Error shutting down telemetry", "error", shutdownErr)
-			}
-		}()
-		// Switch to the OTEL-wrapped logger that was set as default
-		logger = slog.Default()
-		logger.Info("OpenTelemetry initialized successfully")
+		logger.Info("Authentication disabled")
 	}
 
-	// Initialize tool metrics
-	toolMetrics, err := telemetry.NewToolMetrics()
-	if err != nil {
-		logger.Warn("Failed to initialize tool metrics", "error", err)
+	mux := http.NewServeMux()
+
+	// Health endpoints sit outside the auth middleware.
+	mux.HandleFunc("/livez", healthChecker.LivenessHandler)
+	mux.HandleFunc("/readyz", healthChecker.ReadinessHandler)
+	mux.HandleFunc("/startupz", healthChecker.StartupHandler)
+
+	mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	})
+
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{})
+	// Telemetry is the outer layer so metrics cover every request, including auth failures.
+	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
+
+	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled)
+	return corsMiddleware(mux), nil
+}
+
+// serveHTTP serves until ctx is canceled, then marks the server not ready
+// and drains in-flight requests before returning.
+func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChecker *health.Handler, logger *slog.Logger) error {
+	// Streaming responses stay open until the client leaves, so cancel every
+	// request context once shutdown starts rather than let them hold Shutdown
+	// until its timeout.
+	baseCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
+	srv.RegisterOnShutdown(cancelRequests)
 
-	// Initialize HTTP metrics
-	httpMetrics, err := telemetry.NewHTTPMetrics()
-	if err != nil {
-		logger.Warn("Failed to initialize HTTP metrics", "error", err)
-	}
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("MCP HTTP server starting", "address", addr)
+		errCh <- srv.ListenAndServe()
+	}()
 
-	// Set up OpenTelemetry propagator for trace context and baggage
-	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	otel.SetTextMapPropagator(prop)
-
-	// Initialize Dapr client
-	if initErr := initializeDaprClient(ctx, logger); initErr != nil {
-		logger.Error("Fatal error: could not initialize Dapr client", "error", initErr)
-		os.Exit(1)
-	}
-	defer DaprClient.Close()
-
-	// Build server instructions
-	var instructions strings.Builder
-	instructions.WriteString("You are an expert AI assistant for Dapr microservices. Your role is to translate user requests into precise, deterministic, and safe Dapr MCP tool calls.\n\n")
-
-	instructions.WriteString("### Global Safety Rules\n")
-	instructions.WriteString("- **Clarity Before Acting**: If ANY required argument is missing (store name, key, topic, etc.), you **MUST run the get_components tool to enrich the information before proceeding**. If arguments are still missing first try the tool with sensible defaults, if this fails ask the user for clarification.\n")
-	instructions.WriteString("- **Serialization**: Metadata fields MUST be a dictionary/map (e.g., `{}`) and NEVER a quoted string (e.g., `\"{}\"`).\n")
-	instructions.WriteString("- **Multi-Step Workflow**: When multiple operations are requested, execute them sequentially — **one tool call at a time**.\n")
-	instructions.WriteString("- **Forbidden Actions**: NEVER invent component names, keys, topics, or cryptographic parameters.\n\n")
-	instructions.WriteString("### Tool Call Validity\n")
-	instructions.WriteString("Consult the tool's Description for specific component rules (e.g., key formatting, security warnings).\n")
-
-	opts := &mcp.ServerOptions{
-		Instructions: instructions.String(),
-		HasTools:     true,
-	}
-	logger.Debug("Server instructions configured", "instructions", instructions.String())
-
-	server := mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, opts)
-
-	// Register core tools
-	metadata.RegisterTools(server, DaprClient, toolMetrics)
-	invoke.RegisterTools(server, DaprClient, toolMetrics)
-	actor.RegisterTools(server, DaprClient, toolMetrics)
-
-	// Discover components and register conditional tools
-	componentPresence := make(map[string]bool)
-	components, err := metadata.GetLiveComponentList(ctx, DaprClient)
-	if err != nil {
-		logger.Error("Fatal error: could not get components", "error", err)
-		os.Exit(1)
-	}
-	for _, comp := range components {
-		if strings.HasPrefix(comp.Type, "state.") {
-			componentPresence["state"] = true
-		} else if strings.HasPrefix(comp.Type, "pubsub.") {
-			componentPresence["pubsub"] = true
-		} else if strings.HasPrefix(comp.Type, "bindings.") {
-			componentPresence["bindings"] = true
-		} else if strings.HasPrefix(comp.Type, "secretstores.") {
-			componentPresence["secrets"] = true
-		} else if strings.HasPrefix(comp.Type, "lock.") {
-			componentPresence["lock"] = true
-		} else if strings.HasPrefix(comp.Type, "conversation.") {
-			componentPresence["conversation"] = true
-		} else if strings.HasPrefix(comp.Type, "crypto.") {
-			componentPresence["crypto"] = true
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
 		}
+		return fmt.Errorf("http server: %w", err)
+	case <-ctx.Done():
 	}
 
-	logger.Info("Discovered Dapr components", "components", componentPresence)
+	logger.Info("Shutdown signal received, draining connections")
+	healthChecker.SetReady(false)
 
-	if componentPresence["pubsub"] {
-		pubsub.RegisterTools(server, DaprClient, toolMetrics)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("http shutdown: %w", err)
 	}
-	if componentPresence["bindings"] {
-		binding.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if componentPresence["state"] {
-		state.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if componentPresence["secrets"] {
-		secret.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if componentPresence["conversation"] {
-		conversation.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if componentPresence["crypto"] {
-		crypto.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if componentPresence["lock"] {
-		lock.RegisterTools(server, DaprClient, toolMetrics)
-	}
-
-	if *httpAddr != "" {
-		// Initialize health checker
-		healthChecker := health.NewHandler(DaprClient, Version)
-
-		// Initialize authentication
-		authConfig := auth.DefaultConfig()
-		if err := authConfig.Validate(); err != nil {
-			logger.Error("Invalid authentication configuration", "error", err)
-			os.Exit(1)
-		}
-
-		var authMiddleware func(http.Handler) http.Handler
-		if authConfig.Enabled && authConfig.Mode != auth.ModeDisabled {
-			logger.Info("Starting authentication initialization", "mode", authConfig.Mode)
-			authenticators, err := buildAuthenticators(ctx, authConfig, logger)
-			if err != nil {
-				logger.Error("Failed to initialize authenticators", "error", err)
-				os.Exit(1)
-			}
-			middleware := auth.NewMiddleware(authConfig, authenticators, logger)
-			authMiddleware = middleware.Handler
-			logger.Info("Authentication enabled",
-				"mode", authConfig.Mode,
-				"skip_paths", authConfig.SkipPaths,
-			)
-		} else {
-			authMiddleware = auth.NoopMiddleware
-			logger.Info("Authentication disabled")
-		}
-
-		// Create HTTP mux for health endpoints
-		mux := http.NewServeMux()
-
-		// Register health endpoints (no auth required)
-		mux.HandleFunc("/livez", healthChecker.LivenessHandler)
-		mux.HandleFunc("/readyz", healthChecker.ReadinessHandler)
-		mux.HandleFunc("/startupz", healthChecker.StartupHandler)
-
-		// Create MCP Streamable HTTP handler
-		mcpHandler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
-			return server
-		}, &mcp.StreamableHTTPOptions{})
-
-		// Wrap with telemetry (outer) and auth (inner) middleware
-		// Telemetry must be outer so metrics are recorded for ALL requests including auth failures
-		wrappedMCPHandler := telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics)
-
-		// Handle Dapr subscription endpoint
-		mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[]`))
-		})
-
-		// Route all other requests to MCP handler
-		mux.Handle("/", wrappedMCPHandler)
-
-		srv := &http.Server{
-			Addr:              *httpAddr,
-			Handler:           corsMiddleware(mux),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-
-		go func() {
-			logger.Info("MCP HTTP server starting",
-				"address", *httpAddr,
-				"auth_enabled", authConfig.Enabled,
-			)
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("Server failed", "error", err)
-				os.Exit(1)
-			}
-		}()
-
-		<-ctx.Done()
-		logger.Info("Shutdown signal received, draining connections...")
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Server shutdown error", "error", err)
-		}
-		logger.Info("Server stopped gracefully")
-	} else {
-		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
-		if err := server.Run(ctx, t); err != nil {
-			logger.Error("Server failed", "error", err)
-			os.Exit(1)
-		}
-	}
+	logger.Info("Server stopped gracefully")
+	return nil
 }
 
 // buildAuthenticators creates the appropriate authenticators based on configuration.
