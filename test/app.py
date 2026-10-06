@@ -19,7 +19,7 @@ from dapr_agents.llm import DaprChatClient
 
 async def _load_mcp_tools() -> list:
     client = MCPClient()
-    await client.connect_sse("local", url="http://localhost:8080")
+    await client.connect_streamable_http("local", url="http://localhost:8080")
     return client.get_all_tools()
 
 
