@@ -19,12 +19,13 @@ from dapr_agents.llm import DaprChatClient
 
 async def _load_mcp_tools() -> list:
     client = MCPClient()
-    await client.connect_sse("local", url="http://localhost:8088")
+    await client.connect_streamable_http("local", url="http://localhost:8080")
     return client.get_all_tools()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger("opentelemetry.exporter.otlp.proto.grpc.exporter").setLevel(logging.CRITICAL)
 
     try:
         tools = asyncio.run(_load_mcp_tools())
@@ -36,7 +37,7 @@ def main() -> None:
 
     agent = DurableAgent(
         name="Steve",
-        role="Expert Dapr Microservices Client", # Enhanced role for better persona
+        role="Expert Dapr Microservices Client",
         goal=(
             "Translate user intents into precise, deterministic, and safe MCP tool calls. "
             "You MUST strictly adhere to the resource rules and security hints (Annotations) provided by the MCP server for every tool. "
