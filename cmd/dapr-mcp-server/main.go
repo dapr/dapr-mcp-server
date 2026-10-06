@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -322,19 +321,15 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 // serveHTTP serves until ctx is canceled, then marks the server not ready
 // and drains in-flight requests before returning.
 func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChecker *health.Handler, logger *slog.Logger) error {
-	// Streaming responses stay open until the client leaves, so cancel every
-	// request context once shutdown starts rather than let them hold Shutdown
-	// until its timeout.
-	baseCtx, cancelRequests := context.WithCancel(context.Background())
-	defer cancelRequests()
+	streamsCtx, closeStreams := context.WithCancel(context.Background())
+	defer closeStreams()
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           closeStreamsOnShutdown(streamsCtx, handler),
 		ReadHeaderTimeout: readHeaderTimeout,
-		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
-	srv.RegisterOnShutdown(cancelRequests)
+	srv.RegisterOnShutdown(closeStreams)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -361,6 +356,24 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChe
 	}
 	logger.Info("Server stopped gracefully")
 	return nil
+}
+
+// closeStreamsOnShutdown ends GET requests once shutdownCtx is canceled.
+// A streamable HTTP GET is a server-sent event stream that stays open until the client leaves,
+// so it would otherwise hold Shutdown until its timeout.
+// Other requests, such as POSTed tool calls, keep their own context and run to completion.
+func closeStreamsOnShutdown(shutdownCtx context.Context, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		stop := context.AfterFunc(shutdownCtx, cancel)
+		defer stop()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // buildAuthenticators creates the appropriate authenticators based on configuration.
