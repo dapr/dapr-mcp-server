@@ -343,7 +343,6 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 	return nil
 }
 
-// initLogger initializes the structured logger.
 // ParseLogLevel maps a case-insensitive level name to a slog.Level,
 // defaulting to Info for empty or unrecognized names.
 func ParseLogLevel(name string) slog.Level {
@@ -359,6 +358,7 @@ func ParseLogLevel(name string) slog.Level {
 	}
 }
 
+// initLogger initializes the structured logger.
 func initLogger(cfg Config) *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level: ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
