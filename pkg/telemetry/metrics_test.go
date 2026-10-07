@@ -3,260 +3,244 @@ package telemetry
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
+// newManualMeterProvider returns a provider whose data is read on demand from the returned reader.
+func newManualMeterProvider(t *testing.T) (*sdkmetric.MeterProvider, *sdkmetric.ManualReader) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	return provider, reader
+}
+
+// collectMetric returns the named metric, failing the test when it is absent.
+func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) metricdata.Metrics {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == name {
+				return m
+			}
+		}
+	}
+	require.Failf(t, "metric not found", "%s", name)
+	return metricdata.Metrics{}
+}
+
+// hasMetric reports whether the named metric has any data points.
+func hasMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) bool {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sumPoints(t *testing.T, m metricdata.Metrics) []metricdata.DataPoint[int64] {
+	t.Helper()
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	require.True(t, ok, "%s is not an int64 sum", m.Name)
+	return sum.DataPoints
+}
+
+func histogramPoints(t *testing.T, m metricdata.Metrics) []metricdata.HistogramDataPoint[float64] {
+	t.Helper()
+	h, ok := m.Data.(metricdata.Histogram[float64])
+	require.True(t, ok, "%s is not a float64 histogram", m.Name)
+	return h.DataPoints
+}
+
+func attrValue(set attribute.Set, key string) (string, bool) {
+	v, ok := set.Value(attribute.Key(key))
+	if !ok {
+		return "", false
+	}
+	return v.Emit(), true
+}
+
+func newTestToolMetrics(t *testing.T) (*ToolMetrics, *sdkmetric.ManualReader) {
+	t.Helper()
+	provider, reader := newManualMeterProvider(t)
+	m, err := newToolMetrics(provider.Meter("test"))
+	require.NoError(t, err)
+	return m, reader
+}
+
 func TestNewToolMetrics(t *testing.T) {
-	metrics, err := NewToolMetrics()
+	m, err := NewToolMetrics()
 
-	assert.NoError(t, err)
-	assert.NotNil(t, metrics)
-	assert.NotNil(t, metrics.invocations)
-	assert.NotNil(t, metrics.errors)
-	assert.NotNil(t, metrics.duration)
-	assert.NotNil(t, metrics.inProgress)
-	assert.NotNil(t, metrics.meter)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.NotNil(t, m.invocations)
+	assert.NotNil(t, m.errors)
+	assert.NotNil(t, m.duration)
+	assert.NotNil(t, m.inProgress)
 }
 
-func TestToolInvocationStruct(t *testing.T) {
-	inv := ToolInvocation{
-		ToolName:      "test-tool",
-		ToolPackage:   "test-package",
-		ComponentType: "state.redis",
-		Outcome:       "success",
-	}
+func TestToolMetricsRecordAttributes(t *testing.T) {
+	t.Parallel()
 
-	assert.Equal(t, "test-tool", inv.ToolName)
-	assert.Equal(t, "test-package", inv.ToolPackage)
-	assert.Equal(t, "state.redis", inv.ComponentType)
-	assert.Equal(t, "success", inv.Outcome)
-}
-
-func TestRecordInvocation(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:      "save_state",
-		ToolPackage:   "state",
-		ComponentType: "state.redis",
-		Outcome:       "success",
-	}
-
-	// Should not panic
-	metrics.RecordInvocation(context.Background(), inv)
-}
-
-func TestRecordInvocationWithoutOptionalFields(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:    "get_state",
-		ToolPackage: "state",
-		// ComponentType and Outcome are empty
-	}
-
-	// Should not panic
-	metrics.RecordInvocation(context.Background(), inv)
-}
-
-func TestRecordError(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:      "save_state",
-		ToolPackage:   "state",
-		ComponentType: "state.redis",
-	}
-
-	// Should not panic
-	metrics.RecordError(context.Background(), inv, "connection_error")
-}
-
-func TestRecordErrorWithoutComponentType(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:    "save_state",
-		ToolPackage: "state",
-	}
-
-	// Should not panic
-	metrics.RecordError(context.Background(), inv, "validation_error")
-}
-
-func TestRecordDuration(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:      "invoke_service",
-		ToolPackage:   "invoke",
-		ComponentType: "",
-		Outcome:       "success",
-	}
-
-	// Should not panic
-	metrics.RecordDuration(context.Background(), inv, 150.5)
-}
-
-func TestRecordDurationWithAllFields(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:      "publish_event",
-		ToolPackage:   "pubsub",
-		ComponentType: "pubsub.redis",
-		Outcome:       "success",
-	}
-
-	// Should not panic
-	metrics.RecordDuration(context.Background(), inv, 25.3)
-}
-
-func TestStartInProgress(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	// Should not panic
-	metrics.StartInProgress(context.Background(), "test_tool", "test_package")
-}
-
-func TestEndInProgress(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	// Should not panic
-	metrics.EndInProgress(context.Background(), "test_tool", "test_package")
-}
-
-func TestStartTimer(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	timer := metrics.StartTimer(context.Background(), "test_tool", "test_package")
-
-	assert.NotNil(t, timer)
-	assert.Equal(t, "test_tool", timer.inv.ToolName)
-	assert.Equal(t, "test_package", timer.inv.ToolPackage)
-	assert.NotZero(t, timer.start)
-	assert.Equal(t, metrics, timer.metrics)
-}
-
-func TestTimerStop(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	timer := metrics.StartTimer(context.Background(), "test_tool", "test_package")
-
-	// Should not panic
-	timer.Stop("success", "state.redis")
-
-	assert.Equal(t, "success", timer.inv.Outcome)
-	assert.Equal(t, "state.redis", timer.inv.ComponentType)
-}
-
-func TestTimerStopWithError(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	timer := metrics.StartTimer(context.Background(), "failing_tool", "test_package")
-
-	// Should not panic and should record error
-	timer.Stop("error", "")
-
-	assert.Equal(t, "error", timer.inv.Outcome)
-}
-
-func TestTimerStruct(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	ctx := context.Background()
-	timer := &Timer{
-		metrics: metrics,
-		inv: ToolInvocation{
-			ToolName:    "test",
-			ToolPackage: "pkg",
+	tests := []struct {
+		name          string
+		inv           ToolInvocation
+		wantComponent bool
+		wantOutcome   bool
+	}{
+		{
+			name:          "all fields",
+			inv:           ToolInvocation{ToolName: "save_state", ToolPackage: "state", ComponentType: "state.redis", Outcome: OutcomeSuccess},
+			wantComponent: true,
+			wantOutcome:   true,
 		},
-		ctx: ctx,
+		{
+			name: "optional fields empty",
+			inv:  ToolInvocation{ToolName: "get_state", ToolPackage: "state"},
+		},
 	}
 
-	assert.Equal(t, metrics, timer.metrics)
-	assert.Equal(t, "test", timer.inv.ToolName)
-	assert.Equal(t, ctx, timer.ctx)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m, reader := newTestToolMetrics(t)
+			ctx := context.Background()
+			m.RecordInvocation(ctx, tt.inv)
+			m.RecordDuration(ctx, tt.inv, 12.5)
+			m.RecordError(ctx, tt.inv, "connection_error")
+
+			inv := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.invocations"))
+			require.Len(t, inv, 1)
+			assert.Equal(t, int64(1), inv[0].Value)
+			name, _ := attrValue(inv[0].Attributes, attrToolName)
+			assert.Equal(t, tt.inv.ToolName, name)
+			_, hasComponent := attrValue(inv[0].Attributes, attrComponentType)
+			assert.Equal(t, tt.wantComponent, hasComponent)
+			_, hasOutcome := attrValue(inv[0].Attributes, attrOutcome)
+			assert.Equal(t, tt.wantOutcome, hasOutcome)
+
+			dur := histogramPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.duration"))
+			require.Len(t, dur, 1)
+			assert.InDelta(t, 12.5, dur[0].Sum, 1e-9)
+
+			errs := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.errors"))
+			require.Len(t, errs, 1)
+			errType, _ := attrValue(errs[0].Attributes, attrErrorType)
+			assert.Equal(t, "connection_error", errType)
+			_, errHasOutcome := attrValue(errs[0].Attributes, attrOutcome)
+			assert.False(t, errHasOutcome)
+		})
+	}
 }
 
-func TestMetricsFullWorkflow(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
+func TestTimerRecordsOnce(t *testing.T) {
+	t.Parallel()
 
+	tests := []struct {
+		name       string
+		outcome    string
+		wantErrors bool
+	}{
+		{name: "success", outcome: OutcomeSuccess},
+		{name: "error", outcome: OutcomeError, wantErrors: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m, reader := newTestToolMetrics(t)
+			timer := m.StartTimer(context.Background(), "tool", "pkg")
+
+			inProgress := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.in_progress"))
+			require.Len(t, inProgress, 1)
+			assert.Equal(t, int64(1), inProgress[0].Value)
+
+			time.Sleep(2 * time.Millisecond)
+			timer.Stop(tt.outcome, "state.redis")
+			timer.Stop(tt.outcome, "state.redis")
+
+			inProgress = sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.in_progress"))
+			require.Len(t, inProgress, 1)
+			assert.Equal(t, int64(0), inProgress[0].Value, "a second Stop must not decrement again")
+
+			inv := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.invocations"))
+			require.Len(t, inv, 1)
+			assert.Equal(t, int64(1), inv[0].Value)
+			outcome, _ := attrValue(inv[0].Attributes, attrOutcome)
+			assert.Equal(t, tt.outcome, outcome)
+
+			dur := histogramPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.duration"))
+			require.Len(t, dur, 1)
+			assert.Equal(t, uint64(1), dur[0].Count)
+			assert.GreaterOrEqual(t, dur[0].Sum, 2.0)
+
+			assert.Equal(t, tt.wantErrors, hasMetric(t, reader, "dapr-mcp-server.tool.errors"))
+		})
+	}
+}
+
+func TestTimerSurvivesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	m, reader := newTestToolMetrics(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := m.StartTimer(ctx, "tool", "pkg")
+	cancel()
+	timer.Stop(OutcomeSuccess, "")
+
+	inv := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.invocations"))
+	require.Len(t, inv, 1)
+	assert.Equal(t, int64(1), inv[0].Value)
+}
+
+func TestTimerDurationHasSubMillisecondPrecision(t *testing.T) {
+	t.Parallel()
+
+	m, reader := newTestToolMetrics(t)
+	timer := m.StartTimer(context.Background(), "tool", "pkg")
+	timer.Stop(OutcomeSuccess, "")
+
+	dur := histogramPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.duration"))
+	require.Len(t, dur, 1)
+	assert.Greater(t, dur[0].Sum, 0.0, "fast calls must not truncate to 0 ms")
+}
+
+func TestNilToolMetricsIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	var m *ToolMetrics
 	ctx := context.Background()
+	inv := ToolInvocation{ToolName: "t", ToolPackage: "p"}
 
-	// Start a timer (which also marks in-progress)
-	timer := metrics.StartTimer(ctx, "workflow_tool", "workflow_package")
+	assert.NotPanics(t, func() {
+		m.RecordInvocation(ctx, inv)
+		m.RecordError(ctx, inv, "x")
+		m.RecordDuration(ctx, inv, 1)
+		m.StartInProgress(ctx, "t", "p")
+		m.EndInProgress(ctx, "t", "p")
 
-	// Simulate some work...
+		timer := m.StartTimer(ctx, "t", "p")
+		require.NotNil(t, timer)
+		timer.Stop(OutcomeError, "")
+		timer.Stop(OutcomeError, "")
 
-	// Stop the timer (which records invocation, duration, and ends in-progress)
-	timer.Stop("success", "state.redis")
-
-	// All operations should complete without panic
-}
-
-func TestMetricsErrorWorkflow(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	ctx := context.Background()
-
-	// Start a timer
-	timer := metrics.StartTimer(ctx, "error_tool", "error_package")
-
-	// Stop with error outcome - this should also record an error
-	timer.Stop("error", "")
-
-	// All operations should complete without panic
-}
-
-func TestRecordInvocationMultipleTimes(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	ctx := context.Background()
-	inv := ToolInvocation{
-		ToolName:    "repeated_tool",
-		ToolPackage: "test",
-		Outcome:     "success",
-	}
-
-	// Record multiple invocations
-	for i := 0; i < 10; i++ {
-		metrics.RecordInvocation(ctx, inv)
-	}
-
-	// Should not panic
-}
-
-func TestToolMetricsNilContext(t *testing.T) {
-	metrics, err := NewToolMetrics()
-	assert.NoError(t, err)
-
-	inv := ToolInvocation{
-		ToolName:    "nil_ctx_tool",
-		ToolPackage: "test",
-	}
-
-	// These should handle nil context gracefully
-	// Note: In practice, context should not be nil, but the code should not panic
-	metrics.RecordInvocation(context.Background(), inv)
-	metrics.RecordError(context.Background(), inv, "test_error")
-	metrics.RecordDuration(context.Background(), inv, 100.0)
-	metrics.StartInProgress(context.Background(), "tool", "pkg")
-	metrics.EndInProgress(context.Background(), "tool", "pkg")
+		var nilTimer *Timer
+		nilTimer.Stop(OutcomeSuccess, "")
+	})
 }
