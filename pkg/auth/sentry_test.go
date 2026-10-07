@@ -531,6 +531,7 @@ func TestDaprSentryConfig_Validate(t *testing.T) {
 				Enabled:     true,
 				JWKSUrl:     "http://sentry:8080/jwks.json",
 				TrustDomain: "public",
+				Audience:    "public",
 			},
 			wantErr: false,
 		},
