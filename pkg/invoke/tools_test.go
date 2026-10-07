@@ -1,15 +1,21 @@
 package invoke
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/metadata"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
@@ -110,7 +116,7 @@ func TestInvokeServiceTool(t *testing.T) {
 					Return(nil, errors.New("connection refused"))
 			},
 			wantErr:     true,
-			wantContent: "failed to invoke service method",
+			wantContent: "invoke method",
 		},
 		{
 			name: "invoke failure - service not found",
@@ -125,7 +131,7 @@ func TestInvokeServiceTool(t *testing.T) {
 					Return(nil, errors.New("service not found"))
 			},
 			wantErr:     true,
-			wantContent: "failed to invoke service method",
+			wantContent: "invoke method",
 		},
 		{
 			name: "response with non-JSON data",
@@ -149,10 +155,9 @@ func TestInvokeServiceTool(t *testing.T) {
 			mockClient := new(mocks.MockDaprClient)
 			tt.setupMock(mockClient)
 
-			// Replace the package-level client
-			invokeClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := invokeServiceTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.invokeService(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err) // The function doesn't return errors, it returns them in result
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -171,10 +176,75 @@ func TestRegisterTools(t *testing.T) {
 	mockClient := new(mocks.MockDaprClient)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
-	// Should not panic
 	RegisterTools(server, mockClient, nil)
+}
 
-	assert.Equal(t, mockClient, invokeClient)
+func newTestHandler(client InvokeClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}}, &buf
+}
+
+func TestInvokeServiceVerbAndContentType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		args            InvokeServiceArgs
+		wantVerb        string
+		wantContentType string
+		wantErr         string
+	}{
+		{name: "default verb", args: InvokeServiceArgs{Data: `{}`}, wantVerb: DefaultHTTPVerb, wantContentType: toolkit.ContentTypeJSON},
+		{name: "lowercase verb normalized", args: InvokeServiceArgs{HTTPVerb: " get "}, wantVerb: "GET", wantContentType: toolkit.ContentTypeText},
+		{name: "plain text payload", args: InvokeServiceArgs{HTTPVerb: "put", Data: "hello"}, wantVerb: "PUT", wantContentType: toolkit.ContentTypeText},
+		{name: "explicit content type wins", args: InvokeServiceArgs{Data: "a,b", ContentType: "text/csv"}, wantVerb: "POST", wantContentType: "text/csv"},
+		{name: "unsupported verb", args: InvokeServiceArgs{HTTPVerb: "TRACE"}, wantErr: "unsupported httpVerb"},
+		{name: "missing app and method", args: InvokeServiceArgs{}, wantErr: "appID, method"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.wantErr == "" || tt.wantErr == "unsupported httpVerb" {
+				tt.args.AppID, tt.args.Method = "app", "m"
+			}
+			mockClient := new(mocks.MockDaprClient)
+			mockClient.On("InvokeMethodWithContent", mock.Anything, "app", "m", tt.wantVerb, mock.MatchedBy(func(c *client.DataContent) bool {
+				return c.ContentType == tt.wantContentType
+			})).Return([]byte(nil), nil).Maybe()
+
+			h, _ := newTestHandler(mockClient)
+			res, _, err := h.invokeService(context.Background(), nil, tt.args)
+			require.NoError(t, err)
+			if tt.wantErr != "" {
+				require.True(t, res.IsError)
+				assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.wantErr)
+				assert.Empty(t, mockClient.Calls)
+				return
+			}
+			require.False(t, res.IsError)
+			mockClient.AssertNumberOfCalls(t, "InvokeMethodWithContent", 1)
+		})
+	}
+}
+
+func TestInvokeServiceSendsHeadersAsOutgoingMetadata(t *testing.T) {
+	t.Parallel()
+	mockClient := new(mocks.MockDaprClient)
+	mockClient.On("InvokeMethodWithContent", mock.MatchedBy(func(ctx context.Context) bool {
+		md, ok := metadata.FromOutgoingContext(ctx)
+		return ok && slices.Equal(md.Get("x-tenant"), []string{"acme"}) && slices.Equal(md.Get("authorization"), []string{"Bearer t"})
+	}), "app", "m", "POST", mock.Anything).Return([]byte(`[1,2]`), nil)
+
+	h, _ := newTestHandler(mockClient)
+	res, structured, err := h.invokeService(context.Background(), nil, InvokeServiceArgs{
+		AppID:    "app",
+		Method:   "m",
+		Metadata: map[string]string{"X-Tenant": "acme", "Authorization": "Bearer t"},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Equal(t, "[1,2]", structured.(map[string]any)["raw_response"])
+	mockClient.AssertExpectations(t)
 }
 
 // mockInvokeClient implements InvokeClient for testing
@@ -195,7 +265,7 @@ func TestInvokeServiceToolWithInterfaceMock(t *testing.T) {
 	mockInvoke.On("InvokeMethodWithContent", mock.Anything, "app", "method", "POST", mock.Anything).
 		Return([]byte(`{"result": "ok"}`), nil)
 
-	invokeClient = mockInvoke
+	h, _ := newTestHandler(mockInvoke)
 
 	args := InvokeServiceArgs{
 		AppID:    "app",
@@ -204,7 +274,7 @@ func TestInvokeServiceToolWithInterfaceMock(t *testing.T) {
 		HTTPVerb: "POST",
 	}
 
-	result, structured, err := invokeServiceTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, structured, err := h.invokeService(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
