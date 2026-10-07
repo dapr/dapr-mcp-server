@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -72,7 +73,13 @@ type Telemetry struct {
 	MeterProvider  *sdkmetric.MeterProvider
 	LoggerProvider *sdklog.LoggerProvider
 	Logger         *slog.Logger
-	shutdown       []func(context.Context) error
+	shutdown       []shutdownStep
+}
+
+// shutdownStep is one provider's shutdown, named for error messages.
+type shutdownStep struct {
+	name string
+	fn   func(context.Context) error
 }
 
 // DefaultConfig returns a configuration from the generic OTEL_* environment variables.
@@ -178,7 +185,7 @@ func (t *Telemetry) initTracer(ctx context.Context, cfg Config, resource *sdkres
 	)
 	otel.SetTracerProvider(t.TracerProvider)
 
-	t.shutdown = append(t.shutdown, t.TracerProvider.Shutdown)
+	t.shutdown = append(t.shutdown, shutdownStep{name: signalTraces.name, fn: t.TracerProvider.Shutdown})
 	t.Logger.Info("tracer initialized", "endpoint", target.URL, "protocol", target.Protocol)
 	return nil
 }
@@ -216,7 +223,7 @@ func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkre
 	)
 	otel.SetMeterProvider(t.MeterProvider)
 
-	t.shutdown = append(t.shutdown, t.MeterProvider.Shutdown)
+	t.shutdown = append(t.shutdown, shutdownStep{name: signalMetrics.name, fn: t.MeterProvider.Shutdown})
 	t.Logger.Info("metrics initialized", "endpoint", target.URL, "protocol", target.Protocol, "flush_interval", flushInterval)
 	return nil
 }
@@ -253,7 +260,7 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 		)),
 	)
 
-	t.shutdown = append(t.shutdown, t.LoggerProvider.Shutdown)
+	t.shutdown = append(t.shutdown, shutdownStep{name: signalLogs.name, fn: t.LoggerProvider.Shutdown})
 	t.Logger.Info("logs exporter initialized", "endpoint", target.URL, "protocol", target.Protocol, "flush_interval", flushInterval)
 	return nil
 }
@@ -287,16 +294,21 @@ func withServiceAttrs(logger *slog.Logger, cfg Config) *slog.Logger {
 	return logger.With("service", cfg.ServiceName, "version", cfg.ServiceVersion)
 }
 
-// Shutdown gracefully shuts down all telemetry components.
+// Shutdown flushes and stops every provider and returns all of their errors joined.
+//
+// Providers stop in the order they were started: traces, metrics, then logs.
+// Logs go last so that errors logged while the others flush are still exported;
+// once the log provider is down, records still reach stderr through the base handler.
 func (t *Telemetry) Shutdown(ctx context.Context) error {
-	var lastErr error
-	for _, fn := range t.shutdown {
-		if err := fn(ctx); err != nil {
-			lastErr = err
-			t.Logger.Error("shutdown error", "error", err)
+	var errs []error
+	for _, step := range t.shutdown {
+		if err := step.fn(ctx); err != nil {
+			err = fmt.Errorf("shutdown %s: %w", step.name, err)
+			errs = append(errs, err)
+			t.Logger.Error("telemetry shutdown failed", "error", err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // parseExportInterval reads an export interval variable.

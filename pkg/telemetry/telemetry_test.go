@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -292,6 +293,40 @@ func TestTelemetryShutdownEmpty(t *testing.T) {
 
 	tel := &Telemetry{Logger: slog.New(slog.DiscardHandler)}
 	assert.NoError(t, tel.Shutdown(context.Background()))
+}
+
+func TestTelemetryShutdownJoinsErrorsInOrder(t *testing.T) {
+	t.Parallel()
+
+	errTraces := errors.New("traces boom")
+	errLogs := errors.New("logs boom")
+	var order []string
+	step := func(name string, err error) shutdownStep {
+		return shutdownStep{name: name, fn: func(context.Context) error {
+			order = append(order, name)
+			return err
+		}}
+	}
+
+	var buf bytes.Buffer
+	tel := &Telemetry{
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+		shutdown: []shutdownStep{
+			step("traces", errTraces),
+			step("metrics", nil),
+			step("logs", errLogs),
+		},
+	}
+
+	err := tel.Shutdown(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errTraces)
+	assert.ErrorIs(t, err, errLogs)
+	assert.Contains(t, err.Error(), "shutdown traces")
+	assert.Contains(t, err.Error(), "shutdown logs")
+	assert.Equal(t, []string{"traces", "metrics", "logs"}, order)
+	assert.Contains(t, buf.String(), "telemetry shutdown failed")
 }
 
 func TestNewBaseHandler(t *testing.T) {
