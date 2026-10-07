@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -179,7 +180,11 @@ func TestCallLifecycle(t *testing.T) {
 			} else {
 				assert.Nil(t, res)
 			}
-			assert.Contains(t, buf.String(), tt.wantLog)
+			if tt.wantLog == "" {
+				assert.Empty(t, buf.String(), "no outcome must be logged")
+				return
+			}
+			assert.Equal(t, 1, strings.Count(buf.String(), tt.wantLog), "outcome must be logged exactly once")
 		})
 	}
 }
