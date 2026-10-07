@@ -1,14 +1,18 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
@@ -74,7 +78,7 @@ func TestGetSecretTool(t *testing.T) {
 					Return(nil, errors.New("secret not found"))
 			},
 			wantErr:     true,
-			wantContent: "failed to get secret 'nonexistent'",
+			wantContent: `get secret "nonexistent" from store "vault"`,
 		},
 		{
 			name: "get secret failure - store not found",
@@ -88,7 +92,7 @@ func TestGetSecretTool(t *testing.T) {
 					Return(nil, errors.New("secret store not found"))
 			},
 			wantErr:     true,
-			wantContent: "failed to get secret",
+			wantContent: "get secret",
 		},
 		{
 			name: "get secret failure - access denied",
@@ -102,7 +106,7 @@ func TestGetSecretTool(t *testing.T) {
 					Return(nil, errors.New("access denied"))
 			},
 			wantErr:     true,
-			wantContent: "failed to get secret 'restricted'",
+			wantContent: `get secret "restricted"`,
 		},
 	}
 
@@ -111,9 +115,9 @@ func TestGetSecretTool(t *testing.T) {
 			mockClient := new(mocks.MockDaprClient)
 			tt.setupMock(mockClient)
 
-			secretsClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := getSecretTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.getSecret(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -191,7 +195,7 @@ func TestGetBulkSecretTool(t *testing.T) {
 					Return(nil, errors.New("connection timeout"))
 			},
 			wantErr:     true,
-			wantContent: "failed to get bulk secrets from store 'vault'",
+			wantContent: `get bulk secrets from store "vault"`,
 		},
 		{
 			name: "get bulk secrets - store not found",
@@ -204,7 +208,7 @@ func TestGetBulkSecretTool(t *testing.T) {
 					Return(nil, errors.New("secret store not found"))
 			},
 			wantErr:     true,
-			wantContent: "failed to get bulk secrets",
+			wantContent: "get bulk secrets",
 		},
 	}
 
@@ -213,9 +217,9 @@ func TestGetBulkSecretTool(t *testing.T) {
 			mockClient := new(mocks.MockDaprClient)
 			tt.setupMock(mockClient)
 
-			secretsClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := getBulkSecretTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.getBulkSecrets(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -234,10 +238,99 @@ func TestRegisterTools(t *testing.T) {
 	mockClient := new(mocks.MockDaprClient)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
-	// Should not panic
 	RegisterTools(server, mockClient, nil)
+}
 
-	assert.Equal(t, mockClient, secretsClient)
+func newTestHandler(client SecretsClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}}, &buf
+}
+
+func TestSecretValuesNeverLogged(t *testing.T) {
+	t.Parallel()
+	const secretValue = "s3cr3t-value-that-must-not-leak"
+
+	mockClient := new(mocks.MockDaprClient)
+	mockClient.On("GetSecret", mock.Anything, "vault", "db", mock.Anything).
+		Return(map[string]string{"password": secretValue}, nil)
+	mockClient.On("GetBulkSecret", mock.Anything, "vault", mock.Anything).
+		Return(map[string]map[string]string{"db": {"password": secretValue}}, nil)
+
+	h, logs := newTestHandler(mockClient)
+
+	res, structured, err := h.getSecret(context.Background(), &mcp.CallToolRequest{}, GetSecretArgs{StoreName: "vault", SecretName: "db"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Equal(t, secretValue, structured["password"])
+
+	res, bulk, err := h.getBulkSecrets(context.Background(), &mcp.CallToolRequest{}, GetBulkSecretArgs{StoreName: "vault"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Equal(t, secretValue, bulk["db"]["password"])
+
+	assert.Contains(t, logs.String(), "tool call succeeded")
+	assert.NotContains(t, logs.String(), secretValue)
+}
+
+func TestSecretsValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		call func(*handler) *mcp.CallToolResult
+		want string
+	}{
+		{
+			name: "get_secret missing both",
+			call: func(h *handler) *mcp.CallToolResult {
+				res, _, _ := h.getSecret(context.Background(), nil, GetSecretArgs{})
+				return res
+			},
+			want: "storeName, secretName",
+		},
+		{
+			name: "get_secret missing secret name",
+			call: func(h *handler) *mcp.CallToolResult {
+				res, _, _ := h.getSecret(context.Background(), nil, GetSecretArgs{StoreName: "vault"})
+				return res
+			},
+			want: "secretName",
+		},
+		{
+			name: "get_bulk_secrets missing store",
+			call: func(h *handler) *mcp.CallToolResult {
+				res, _, _ := h.getBulkSecrets(context.Background(), nil, GetBulkSecretArgs{StoreName: " "})
+				return res
+			},
+			want: "storeName",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mocks.MockDaprClient)
+			h, _ := newTestHandler(mockClient)
+			res := tt.call(h)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
+			mockClient.AssertNotCalled(t, "GetSecret")
+			mockClient.AssertNotCalled(t, "GetBulkSecret")
+		})
+	}
+}
+
+func TestSecretsMetadataPassedThroughUnchanged(t *testing.T) {
+	t.Parallel()
+	meta := map[string]string{"version_id": "2"}
+	mockClient := new(mocks.MockDaprClient)
+	mockClient.On("GetSecret", mock.Anything, "vault", "db", meta).Return(map[string]string{}, nil)
+	mockClient.On("GetBulkSecret", mock.Anything, "vault", meta).Return(map[string]map[string]string{}, nil)
+
+	h, _ := newTestHandler(mockClient)
+	_, _, _ = h.getSecret(context.Background(), nil, GetSecretArgs{StoreName: "vault", SecretName: "db", Metadata: meta})
+	_, _, _ = h.getBulkSecrets(context.Background(), nil, GetBulkSecretArgs{StoreName: "vault", Metadata: meta})
+
+	mockClient.AssertExpectations(t)
 }
 
 // mockSecretsClient implements SecretsClient for testing
@@ -266,14 +359,14 @@ func TestGetSecretToolWithInterfaceMock(t *testing.T) {
 	mockSecrets.On("GetSecret", mock.Anything, "test-store", "test-secret", mock.Anything).
 		Return(map[string]string{"test-secret": "test-value"}, nil)
 
-	secretsClient = mockSecrets
+	h, _ := newTestHandler(mockSecrets)
 
 	args := GetSecretArgs{
 		StoreName:  "test-store",
 		SecretName: "test-secret",
 	}
 
-	result, structured, err := getSecretTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, structured, err := h.getSecret(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
