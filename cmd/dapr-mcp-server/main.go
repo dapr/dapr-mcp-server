@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -61,6 +62,7 @@ func main() {
 
 	logger := newLogger(os.Stderr)
 	slog.SetDefault(logger)
+	redirectDaprSDKLogs(os.Stderr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	err := run(ctx, logger)
@@ -92,6 +94,13 @@ func newLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: telemetry.ParseLogLevel(os.Getenv(logLevelEnv)),
 	}))
+}
+
+// redirectDaprSDKLogs sends the Dapr Go SDK's package logger to w.
+// The SDK writes to stdout by default, which in the stdio transport would put
+// non-JSON-RPC text ahead of the MCP handshake.
+func redirectDaprSDKLogs(w io.Writer) {
+	dapr.SetLogger(log.New(w, "", 0))
 }
 
 // run wires up the server and blocks until ctx is canceled or the server fails.
