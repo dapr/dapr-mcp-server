@@ -501,6 +501,33 @@ func TestDaprSentryAuthenticator_PeriodicRefresh(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidToken)
 }
 
+func TestDaprSentryAuthenticator_ScheduledRefreshDoesNotBlockOnInflightFetch(t *testing.T) {
+	t.Parallel()
+	privateKey, jwk := generateTestKey(t)
+	server := newJWKSServer(t, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
+	clock := newTestClock()
+	a := newTestSentry(t, testSentryConfig(server.URL), clock)
+	clock.Advance(DefaultJWKSRefreshInterval + time.Second)
+
+	// Simulate a slow fetch in flight on another request.
+	a.refreshMu.Lock()
+	t.Cleanup(a.refreshMu.Unlock)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Authenticate(context.Background(), createTestJWT(t, privateKey, testKeyID, validClaims(clock.Now())))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("request with a cached key waited behind the scheduled JWKS fetch")
+	}
+	assert.EqualValues(t, 1, server.hits.Load(), "the in-flight fetch must not be duplicated")
+}
+
 func TestDaprSentryAuthenticator_NewRejectsBadConfig(t *testing.T) {
 	t.Parallel()
 	_, jwk := generateTestKey(t)

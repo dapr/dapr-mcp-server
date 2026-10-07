@@ -277,7 +277,10 @@ func (a *DaprSentryAuthenticator) cooledDown(s jwksState) bool {
 // at most once per MinJWKSRefreshInterval.
 func (a *DaprSentryAuthenticator) signingKeys(ctx context.Context, kid, alg string) ([]jose.JSONWebKey, error) {
 	if s := a.snapshot(); a.now().Sub(s.lastRefresh) > a.config.RefreshInterval && a.cooledDown(s) {
-		a.refreshIfDue(ctx, func(s jwksState) bool {
+		// While the cached keys are still usable, only one caller pays for the scheduled fetch,
+		// and the rest carry on with the cache instead of queuing behind it.
+		wait := a.usable(s) != nil
+		a.refreshIfDue(ctx, wait, func(s jwksState) bool {
 			return a.now().Sub(s.lastRefresh) > a.config.RefreshInterval
 		})
 	}
@@ -291,7 +294,7 @@ func (a *DaprSentryAuthenticator) signingKeys(ctx context.Context, kid, alg stri
 	}
 
 	if a.cooledDown(s) {
-		a.refreshIfDue(ctx, func(jwksState) bool { return true })
+		a.refreshIfDue(ctx, true, func(jwksState) bool { return true })
 		s = a.snapshot()
 		if err := a.usable(s); err != nil {
 			return nil, err
@@ -315,9 +318,14 @@ func (a *DaprSentryAuthenticator) usable(s jwksState) error {
 
 // refreshIfDue fetches the JWKS unless another caller fetched it within the cooldown
 // while this one waited, or need reports the fetch is no longer required.
+// When wait is false and another fetch is already in flight, it returns at once.
 // Failures are logged; callers fall back to the cached keys.
-func (a *DaprSentryAuthenticator) refreshIfDue(ctx context.Context, need func(jwksState) bool) {
-	a.refreshMu.Lock()
+func (a *DaprSentryAuthenticator) refreshIfDue(ctx context.Context, wait bool, need func(jwksState) bool) {
+	if wait {
+		a.refreshMu.Lock()
+	} else if !a.refreshMu.TryLock() {
+		return
+	}
 	defer a.refreshMu.Unlock()
 
 	s := a.snapshot()
