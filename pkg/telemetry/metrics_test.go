@@ -71,7 +71,7 @@ func attrValue(set attribute.Set, key string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return v.Emit(), true
+	return v.String(), true
 }
 
 func newTestToolMetrics(t *testing.T) (*ToolMetrics, *sdkmetric.ManualReader) {

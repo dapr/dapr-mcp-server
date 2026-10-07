@@ -81,8 +81,9 @@ func (b *syncBuffer) lines(t *testing.T) []map[string]any {
 	t.Helper()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var out []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(b.buf.String()), "\n") {
+	raw := strings.Split(strings.TrimSpace(b.buf.String()), "\n")
+	out := make([]map[string]any, 0, len(raw))
+	for _, line := range raw {
 		if line == "" {
 			continue
 		}
