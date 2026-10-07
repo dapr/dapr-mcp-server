@@ -111,6 +111,7 @@ func TestEncryptTool(t *testing.T) {
 			}
 			require.False(t, res.IsError)
 			assert.Equal(t, tt.wantCipher, structured.(map[string]string)["cipher_text"])
+			assert.Contains(t, textOf(t, res), tt.wantCipher, "text content must carry the cipher text")
 			assert.NotContains(t, logs.String(), tt.args.PlainText)
 		})
 	}
@@ -188,6 +189,7 @@ func TestDecryptTool(t *testing.T) {
 			}
 			require.False(t, res.IsError)
 			assert.Equal(t, tt.wantPlain, structured.(map[string]string)["plain_text"])
+			assert.Contains(t, textOf(t, res), tt.wantPlain, "text content must carry the plain text")
 		})
 	}
 }

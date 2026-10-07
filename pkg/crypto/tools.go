@@ -100,12 +100,14 @@ func (h *handler) encrypt(ctx context.Context, _ *mcp.CallToolRequest, args Encr
 	}
 
 	call.Succeed("component", args.ComponentName, "key", keyName, "cipher_bytes", len(cipher))
+	cipherText := base64.StdEncoding.EncodeToString(cipher)
+	// Clients that read only the text content must still receive the cipher text.
 	text := fmt.Sprintf(
-		"Successfully encrypted message using component '%s'. The base64-encoded cipher text is returned in the tool result.",
-		args.ComponentName,
+		"Successfully encrypted message using component '%s'. Base64-encoded cipher text:\n%s",
+		args.ComponentName, cipherText,
 	)
 	return toolkit.TextResult(text), map[string]string{
-		"cipher_text":    base64.StdEncoding.EncodeToString(cipher),
+		"cipher_text":    cipherText,
 		"component_name": args.ComponentName,
 	}, nil
 }
@@ -142,9 +144,10 @@ func (h *handler) decrypt(ctx context.Context, _ *mcp.CallToolRequest, args Decr
 	}
 
 	call.Succeed("component", args.ComponentName, "plain_bytes", len(plain))
+	// Clients that read only the text content must still receive the plain text.
 	text := fmt.Sprintf(
-		"Successfully decrypted message using component '%s'. Plain text is returned in the tool result.",
-		args.ComponentName,
+		"Successfully decrypted message using component '%s'. Plain text:\n%s",
+		args.ComponentName, plain,
 	)
 	return toolkit.TextResult(text), map[string]string{
 		"plain_text":     string(plain),
