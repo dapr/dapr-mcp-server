@@ -1,15 +1,19 @@
 package bindings
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
@@ -94,7 +98,7 @@ func TestInvokeOutputBindingTool(t *testing.T) {
 					Return(&dapr.BindingEvent{Data: []byte("raw text data")}, nil)
 			},
 			wantErr:     false,
-			wantContent: "Response Data (Raw):",
+			wantContent: "Response Data:\nraw text data",
 		},
 		{
 			name: "binding invocation failure - binding not found",
@@ -109,7 +113,7 @@ func TestInvokeOutputBindingTool(t *testing.T) {
 					Return(nil, errors.New("binding not found"))
 			},
 			wantErr:     true,
-			wantContent: "Failed to invoke binding 'nonexistent-binding' with operation 'create'",
+			wantContent: `invoke binding "nonexistent-binding" with operation "create"`,
 		},
 		{
 			name: "binding invocation failure - connection error",
@@ -124,7 +128,7 @@ func TestInvokeOutputBindingTool(t *testing.T) {
 					Return(nil, errors.New("connection refused"))
 			},
 			wantErr:     true,
-			wantContent: "Failed to invoke binding",
+			wantContent: "invoke binding",
 		},
 		{
 			name: "binding invocation failure - invalid operation",
@@ -139,7 +143,7 @@ func TestInvokeOutputBindingTool(t *testing.T) {
 					Return(nil, errors.New("operation not supported"))
 			},
 			wantErr:     true,
-			wantContent: "Failed to invoke binding 'storage-binding' with operation 'invalid-op'",
+			wantContent: `invoke binding "storage-binding" with operation "invalid-op"`,
 		},
 		{
 			name: "binding invocation with multiple metadata",
@@ -163,9 +167,9 @@ func TestInvokeOutputBindingTool(t *testing.T) {
 			mockClient := new(mocks.MockDaprClient)
 			tt.setupMock(mockClient)
 
-			bindingsClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := invokeOutputBindingTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.invokeOutputBinding(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -184,10 +188,64 @@ func TestRegisterTools(t *testing.T) {
 	mockClient := new(mocks.MockDaprClient)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
-	// Should not panic
 	RegisterTools(server, mockClient, nil)
+}
 
-	assert.Equal(t, mockClient, bindingsClient)
+func newTestHandler(client BindingsClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}}, &buf
+}
+
+func TestInvokeOutputBindingNilResponse(t *testing.T) {
+	t.Parallel()
+	mockBinding := new(mockBindingsClient)
+	mockBinding.On("InvokeBinding", mock.Anything, mock.Anything).Return(nil, nil)
+
+	h, _ := newTestHandler(mockBinding)
+	res, structured, err := h.invokeOutputBinding(context.Background(), nil, InvokeBindingArgs{BindingName: "b", Operation: "create"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Empty(t, structured.(map[string]string)["response_data"])
+}
+
+func TestInvokeOutputBindingMetadataUnchanged(t *testing.T) {
+	t.Parallel()
+	meta := map[string]string{"key": "file.txt"}
+	mockBinding := new(mockBindingsClient)
+	mockBinding.On("InvokeBinding", mock.Anything, mock.MatchedBy(func(req *dapr.InvokeBindingRequest) bool {
+		return assert.ObjectsAreEqual(meta, req.Metadata)
+	})).Return(&dapr.BindingEvent{}, nil)
+
+	h, _ := newTestHandler(mockBinding)
+	res, _, err := h.invokeOutputBinding(context.Background(), nil, InvokeBindingArgs{BindingName: "b", Operation: "create", Metadata: meta})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	mockBinding.AssertExpectations(t)
+}
+
+func TestInvokeOutputBindingValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args InvokeBindingArgs
+		want string
+	}{
+		{name: "missing both", args: InvokeBindingArgs{}, want: "bindingName, operation"},
+		{name: "missing operation", args: InvokeBindingArgs{BindingName: "b"}, want: "operation"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockBinding := new(mockBindingsClient)
+			h, _ := newTestHandler(mockBinding)
+			res, _, err := h.invokeOutputBinding(context.Background(), nil, tt.args)
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
+			assert.Empty(t, mockBinding.Calls)
+		})
+	}
 }
 
 // mockBindingsClient implements BindingsClient for testing
@@ -208,7 +266,7 @@ func TestInvokeOutputBindingToolWithInterfaceMock(t *testing.T) {
 	mockBinding.On("InvokeBinding", mock.Anything, mock.AnythingOfType("*client.InvokeBindingRequest")).
 		Return(&dapr.BindingEvent{Data: []byte(`{"result": "ok"}`)}, nil)
 
-	bindingsClient = mockBinding
+	h, _ := newTestHandler(mockBinding)
 
 	args := InvokeBindingArgs{
 		BindingName: "test-binding",
@@ -217,7 +275,7 @@ func TestInvokeOutputBindingToolWithInterfaceMock(t *testing.T) {
 		Metadata:    map[string]string{"key": "value"},
 	}
 
-	result, structured, err := invokeOutputBindingTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, structured, err := h.invokeOutputBinding(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
@@ -240,7 +298,7 @@ func TestInvokeOutputBindingToolRequestContent(t *testing.T) {
 			req.Data == nil
 	})).Return(&dapr.BindingEvent{Data: []byte{}}, nil)
 
-	bindingsClient = mockBinding
+	h, _ := newTestHandler(mockBinding)
 
 	args := InvokeBindingArgs{
 		BindingName: "test-binding",
@@ -249,7 +307,7 @@ func TestInvokeOutputBindingToolRequestContent(t *testing.T) {
 		Metadata:    nil,
 	}
 
-	result, _, err := invokeOutputBindingTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, _, err := h.invokeOutputBinding(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
