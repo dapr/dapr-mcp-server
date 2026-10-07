@@ -31,7 +31,7 @@ const (
 	envSentryTrustDomain     = "DAPR_SENTRY_TRUST_DOMAIN"
 	envSentryAudience        = "DAPR_SENTRY_AUDIENCE"
 	envSentryIssuer          = "DAPR_SENTRY_ISSUER"
-	envSentryTokenHeader     = "DAPR_SENTRY_TOKEN_HEADER"
+	envSentryTokenHeader     = "DAPR_SENTRY_TOKEN_HEADER" //nolint:gosec // environment variable name, not a credential
 	envSentryRefreshInterval = "DAPR_SENTRY_JWKS_REFRESH_INTERVAL"
 )
 
