@@ -5,7 +5,7 @@ Guidance for AI agents working with `dapr-mcp-server`. Two audiences:
 1. **Agents contributing to this repo** — Claude Code, Cursor, Cline, Copilot editing Go code in this project. Start at [§ Contributors](#contributors).
 2. **Agents consuming this MCP server** — LLM-driven agents that call the tools this server exposes. Start at [§ Consumers](#consumers).
 
-Both sections are short on purpose. Deep content lives in the [docs](https://docs.dapr.io/developing-ai/mcp/) and in the tool schemas the server emits at runtime.
+Both sections are short on purpose. Deep content lives in the [docs](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/) and in the tool schemas the server emits at runtime.
 
 ---
 
@@ -133,7 +133,7 @@ Use `dapr-mcp-server` when you need durable state, distributed coordination, eve
 
 ### Authoritative schema
 
-This file summarizes safety defaults. The **authoritative tool schema** is what the server emits at connection time. For a static, human-readable reference see the [tool reference](https://docs.dapr.io/developing-ai/mcp/mcp-server-tool-reference/) at docs.dapr.io.
+This file summarizes safety defaults. The **authoritative tool schema** is what the server emits at connection time. For a static, human-readable reference see the [tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/) at docs.dapr.io.
 
 ---
 
@@ -142,5 +142,5 @@ This file summarizes safety defaults. The **authoritative tool schema** is what 
 - [README](./README.md) — landing page, install, quick start
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — DCO, PR workflow, developer guide
 - [SECURITY.md](./SECURITY.md) — vulnerability disclosure
-- [docs.dapr.io / developing-ai / mcp](https://docs.dapr.io/developing-ai/mcp/) — full documentation
+- [docs.dapr.io / developing-ai / mcp](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/) — full documentation
 - [Model Context Protocol](https://modelcontextprotocol.io/) — protocol spec
