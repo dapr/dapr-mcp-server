@@ -152,10 +152,15 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return nil
 	}
 
-	handler, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
+	handler, authenticators, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := auth.CloseAuthenticators(authenticators); err != nil {
+			logger.Warn("Failed to close authenticators", "error", err)
+		}
+	}()
 	return serveHTTP(ctx, *httpAddr, handler, healthChecker, logger)
 }
 
@@ -226,18 +231,22 @@ func corsMiddleware(origin string, next http.Handler) http.Handler {
 	})
 }
 
-func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, error) {
+// buildHTTPHandler wires the health, subscription and MCP routes, with auth in front of MCP.
+// The returned authenticators hold background resources, so the caller closes them once the server stops.
+func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, []auth.Authenticator, error) {
 	authConfig := auth.DefaultConfig()
 	if err := authConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid authentication configuration: %w", err)
+		return nil, nil, fmt.Errorf("invalid authentication configuration: %w", err)
 	}
 
+	var authenticators []auth.Authenticator
 	authMiddleware := auth.NoopMiddleware
 	if authConfig.Enabled && authConfig.Mode != auth.ModeDisabled {
 		logger.Info("Starting authentication initialization", "mode", authConfig.Mode)
-		authenticators, err := buildAuthenticators(ctx, authConfig, logger)
+		var err error
+		authenticators, err = buildAuthenticators(ctx, authConfig, logger)
 		if err != nil {
-			return nil, fmt.Errorf("initialize authenticators: %w", err)
+			return nil, nil, fmt.Errorf("initialize authenticators: %w", err)
 		}
 		authMiddleware = auth.NewMiddleware(authConfig, authenticators, logger).Handler
 		logger.Info("Authentication enabled",
@@ -263,7 +272,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
 
 	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled)
-	return corsMiddleware(os.Getenv(corsOriginEnv), mux), nil
+	return corsMiddleware(os.Getenv(corsOriginEnv), mux), authenticators, nil
 }
 
 // serveHTTP serves until ctx is canceled, then marks the server not ready
@@ -330,23 +339,31 @@ func closeStreamsOnShutdown(shutdownCtx context.Context, next http.Handler) http
 	})
 }
 
-// buildAuthenticators creates the appropriate authenticators based on configuration.
-func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logger) ([]auth.Authenticator, error) {
-	var authenticators []auth.Authenticator
+// buildAuthenticators creates the authenticators the configured mode calls for.
+// A single mode enables its own authenticator; hybrid mode enables each one whose flag is set.
+// If any authenticator fails to start, the ones already created are closed.
+func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logger) (authenticators []auth.Authenticator, err error) {
+	hybrid := cfg.Mode == auth.ModeHybrid
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, auth.CloseAuthenticators(authenticators))
+			authenticators = nil
+		}
+	}()
 
-	switch cfg.Mode {
-	case auth.ModeOIDC:
+	if cfg.Mode == auth.ModeOIDC || (hybrid && cfg.OIDC.Enabled) {
 		logger.Info("Initializing OIDC authenticator",
 			"issuer_url", cfg.OIDC.IssuerURL,
 			"client_id", cfg.OIDC.ClientID,
 		)
-		oidc, err := auth.NewOIDCAuthenticator(ctx, cfg.OIDC)
+		oidc, err := auth.NewOIDCAuthenticatorWithLogger(ctx, cfg.OIDC, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create OIDC authenticator: %w", err)
+			return authenticators, fmt.Errorf("create OIDC authenticator: %w", err)
 		}
 		authenticators = append(authenticators, oidc)
+	}
 
-	case auth.ModeSPIFFE:
+	if cfg.Mode == auth.ModeSPIFFE || (hybrid && cfg.SPIFFE.Enabled) {
 		logger.Info("Initializing SPIFFE authenticator",
 			"trust_domain", cfg.SPIFFE.TrustDomain,
 			"server_id", cfg.SPIFFE.ServerID,
@@ -354,60 +371,24 @@ func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logg
 		)
 		spiffe, err := auth.NewSPIFFEAuthenticator(ctx, cfg.SPIFFE)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SPIFFE authenticator: %w", err)
+			return authenticators, fmt.Errorf("create SPIFFE authenticator: %w", err)
 		}
 		authenticators = append(authenticators, spiffe)
+	}
 
-	case auth.ModeDaprSentry:
+	if cfg.Mode == auth.ModeDaprSentry || (hybrid && cfg.DaprSentry.Enabled) {
 		logger.Info("Initializing Dapr Sentry authenticator",
 			"jwks_url", cfg.DaprSentry.JWKSUrl,
 			"trust_domain", cfg.DaprSentry.TrustDomain,
 			"audience", cfg.DaprSentry.Audience,
+			"issuer", cfg.DaprSentry.Issuer,
 			"token_header", cfg.DaprSentry.TokenHeader,
 		)
 		sentry, err := auth.NewDaprSentryAuthenticatorWithLogger(ctx, cfg.DaprSentry, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create Dapr Sentry authenticator: %w", err)
+			return authenticators, fmt.Errorf("create Dapr Sentry authenticator: %w", err)
 		}
 		authenticators = append(authenticators, sentry)
-
-	case auth.ModeHybrid:
-		if cfg.OIDC.Enabled {
-			logger.Info("Initializing OIDC authenticator (hybrid mode)",
-				"issuer_url", cfg.OIDC.IssuerURL,
-				"client_id", cfg.OIDC.ClientID,
-			)
-			oidc, err := auth.NewOIDCAuthenticator(ctx, cfg.OIDC)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create OIDC authenticator: %w", err)
-			}
-			authenticators = append(authenticators, oidc)
-		}
-		if cfg.SPIFFE.Enabled {
-			logger.Info("Initializing SPIFFE authenticator (hybrid mode)",
-				"trust_domain", cfg.SPIFFE.TrustDomain,
-				"server_id", cfg.SPIFFE.ServerID,
-				"endpoint_socket", cfg.SPIFFE.EndpointSocket,
-			)
-			spiffe, err := auth.NewSPIFFEAuthenticator(ctx, cfg.SPIFFE)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create SPIFFE authenticator: %w", err)
-			}
-			authenticators = append(authenticators, spiffe)
-		}
-		if cfg.DaprSentry.Enabled {
-			logger.Info("Initializing Dapr Sentry authenticator (hybrid mode)",
-				"jwks_url", cfg.DaprSentry.JWKSUrl,
-				"trust_domain", cfg.DaprSentry.TrustDomain,
-				"audience", cfg.DaprSentry.Audience,
-				"token_header", cfg.DaprSentry.TokenHeader,
-			)
-			sentry, err := auth.NewDaprSentryAuthenticatorWithLogger(ctx, cfg.DaprSentry, logger)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create Dapr Sentry authenticator: %w", err)
-			}
-			authenticators = append(authenticators, sentry)
-		}
 	}
 
 	logger.Info("Authenticators initialized", "count", len(authenticators))
