@@ -16,8 +16,6 @@ import (
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/dapr/dapr-mcp-server/pkg/auth"
 	"github.com/dapr/dapr-mcp-server/pkg/health"
@@ -90,7 +88,7 @@ func newLogger(w io.Writer) *slog.Logger {
 func run(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("Starting dapr-mcp-server", "version", Version)
 
-	shutdownTelemetry, err := telemetry.Initialize(ctx)
+	shutdownTelemetry, err := telemetry.Initialize(ctx, telemetry.WithServiceVersion(Version))
 	if err != nil {
 		logger.Warn("Failed to initialize telemetry, continuing without observability", "error", err)
 	} else {
@@ -103,8 +101,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 				slog.Error("Error shutting down telemetry", "error", flushErr)
 			}
 		}()
-		// When OTEL log export is enabled, Initialize installs a default logger that also exports records.
-		// Otherwise the default is still the logger main installed, so this is a no-op.
+		// Initialize installs a stderr logger as the default, which also exports records when OTEL log export is on.
 		logger = slog.Default()
 		logger.Info("OpenTelemetry initialized successfully")
 	}
@@ -118,9 +115,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		logger.Warn("Failed to initialize HTTP metrics, requests will be served without metrics", "error", err)
 	}
-
-	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	otel.SetTextMapPropagator(prop)
 
 	daprClient, err := initializeDaprClient(ctx, newDefaultDaprClient, daprClientRetryDelay, logger)
 	if err != nil {
