@@ -21,7 +21,7 @@ const (
 	toolGetSecret      = "get_secret"
 	toolGetBulkSecrets = "get_bulk_secrets"
 
-	attrSecretName = "dapr.secrets.key"
+	attrSecretName = "dapr.secrets.key" //nolint:gosec // span attribute name, not a credential
 )
 
 // SecretsClient defines the interface for secrets operations.
