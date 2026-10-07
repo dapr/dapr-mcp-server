@@ -16,15 +16,19 @@ Full documentation lives at **[docs.dapr.io / developing-ai / mcp](https://docs.
 
 ## Quick start
 
+Run the binary next to a Dapr sidecar with `dapr run` (install it from [Install](#install)):
+
 ```bash
 dapr init
-docker pull ghcr.io/dapr/dapr-mcp-server:latest
-dapr run --app-id dapr-mcp-server \
-         --resources-path resources \
-         -- docker run --rm ghcr.io/dapr/dapr-mcp-server:latest --http :8080
+
+# stdio, for local MCP clients that launch the server themselves
+dapr run --app-id dapr-mcp-server --resources-path resources -- dapr-mcp-server
+
+# streamable HTTP, for remote clients
+dapr run --app-id dapr-mcp-server --resources-path resources -- dapr-mcp-server --http :8080
 ```
 
-Then connect any MCP client to `http://localhost:8080/`. For the complete walk-through (components, auth, OTEL, verification), see the [getting started guide](https://docs.dapr.io/developing-ai/mcp/mcp-server-getting-started/).
+With `--http`, connect any MCP client to `http://localhost:8080/`. The container image is meant for Kubernetes, where the Dapr sidecar injector adds the sidecar through the `dapr.io/enabled: "true"` and `dapr.io/app-id` pod annotations. For the complete walk-through (components, auth, OTEL, verification), see the [getting started guide](https://docs.dapr.io/developing-ai/mcp/mcp-server-getting-started/).
 
 ## Install
 
