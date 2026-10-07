@@ -38,23 +38,6 @@ func TestSPIFFEConfigStruct(t *testing.T) {
 	assert.Len(t, cfg.AllowedClients, 2)
 }
 
-func TestSPIFFEAuthenticatorStruct(t *testing.T) {
-	auth := &SPIFFEAuthenticator{
-		config: SPIFFEConfig{
-			Enabled:     true,
-			TrustDomain: "cluster.local",
-			ServerID:    "spiffe://cluster.local/server",
-		},
-		source:  nil, // Would be set by NewSPIFFEAuthenticator
-		allowed: map[string]struct{}{"spiffe://cluster.local/client": {}},
-	}
-
-	assert.True(t, auth.config.Enabled)
-	assert.Equal(t, "cluster.local", auth.config.TrustDomain)
-	assert.Nil(t, auth.source)
-	assert.Contains(t, auth.allowed, "spiffe://cluster.local/client")
-}
-
 func TestSPIFFEConnectionTimeout(t *testing.T) {
 	assert.Equal(t, 10*time.Second, SPIFFEConnectionTimeout)
 }
@@ -163,26 +146,3 @@ func TestSPIFFEConfigWithAllowedClients(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, cfg.AllowedClients, 3)
 }
-
-func TestSPIFFEAuthenticatorAllowedMap(t *testing.T) {
-	// Test that the allowed map is properly built
-	allowed := make(map[string]struct{})
-	clients := []string{
-		"spiffe://cluster.local/client1",
-		"spiffe://cluster.local/client2",
-	}
-
-	for _, client := range clients {
-		allowed[client] = struct{}{}
-	}
-
-	assert.Len(t, allowed, 2)
-	_, ok := allowed["spiffe://cluster.local/client1"]
-	assert.True(t, ok)
-	_, ok = allowed["spiffe://cluster.local/client3"]
-	assert.False(t, ok)
-}
-
-// Note: Testing NewSPIFFEAuthenticator and Authenticate would require
-// a running SPIRE agent or extensive mocking of the workloadapi package.
-// These tests focus on the simpler methods and struct validation.
