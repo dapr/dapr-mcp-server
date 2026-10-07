@@ -34,6 +34,14 @@ Then connect any MCP client to `http://localhost:8080/`. For the complete walk-t
 | Binary | Download from [Releases](https://github.com/dapr/dapr-mcp-server/releases) and place on `PATH` |
 | From source (Go 1.25+) | `go install github.com/dapr/dapr-mcp-server/cmd/dapr-mcp-server@latest` |
 
+## Configuration
+
+The [getting started guide](https://docs.dapr.io/developing-ai/mcp/mcp-server-getting-started/) has the full environment variable reference. Settings specific to the HTTP transport:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `DAPR_MCP_CORS_ORIGIN` | unset (no CORS headers) | Origin allowed to call the server from a browser, for example `https://app.example.com`. Set it only when a browser-based MCP client on another origin needs access. |
+
 ## Documentation
 
 | Page | Purpose |

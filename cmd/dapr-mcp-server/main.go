@@ -33,6 +33,10 @@ const (
 	httpShutdownTimeout   = 15 * time.Second
 	telemetryFlushTimeout = 10 * time.Second
 	logLevelEnv           = "DAPR_MCP_SERVER_LOG_LEVEL"
+	corsOriginEnv         = "DAPR_MCP_CORS_ORIGIN"
+	corsAllowMethods      = "GET, POST, PUT, DELETE, OPTIONS"
+	corsAllowHeaders      = "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version"
+	corsExposeHeaders     = "Mcp-Session-Id, Mcp-Protocol-Version"
 )
 
 var (
@@ -191,16 +195,17 @@ func buildInstructions() string {
 	return b.String()
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	origin := os.Getenv("DAPR_MCP_CORS_ORIGIN")
+// corsMiddleware adds CORS headers for origin and answers preflight requests.
+// An empty origin disables CORS entirely, so browsers on other origins are refused by default.
+func corsMiddleware(origin string, next http.Handler) http.Handler {
 	if origin == "" {
-		origin = "*"
+		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version")
-		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version")
+		w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+		w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -248,7 +253,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
 
 	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled)
-	return corsMiddleware(mux), nil
+	return corsMiddleware(os.Getenv(corsOriginEnv), mux), nil
 }
 
 // serveHTTP serves until ctx is canceled, then marks the server not ready
