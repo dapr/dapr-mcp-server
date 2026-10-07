@@ -1,14 +1,20 @@
 package conversation
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	dapr "github.com/dapr/go-sdk/client"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 )
 
 // mockConversationClient implements ConversationClient for testing.
@@ -38,7 +44,7 @@ func TestConverseTool(t *testing.T) {
 				Name:        "ollama",
 				Prompt:      "Hello, how are you?",
 				ContextID:   "ctx-123",
-				Temperature: 0.7,
+				Temperature: ptr(0.7),
 			},
 			setupMock: func(m *mockConversationClient) {
 				m.On("ConverseAlpha2", mock.Anything, mock.AnythingOfType("client.ConversationRequestAlpha2")).
@@ -64,7 +70,7 @@ func TestConverseTool(t *testing.T) {
 				Name:        "openai",
 				Prompt:      "What is 2+2?",
 				ContextID:   "",
-				Temperature: 0.5,
+				Temperature: ptr(0.5),
 			},
 			setupMock: func(m *mockConversationClient) {
 				m.On("ConverseAlpha2", mock.Anything, mock.AnythingOfType("client.ConversationRequestAlpha2")).
@@ -87,9 +93,8 @@ func TestConverseTool(t *testing.T) {
 		{
 			name: "successful conversation with default temperature",
 			args: ConverseArgs{
-				Name:        "llm",
-				Prompt:      "Test",
-				Temperature: 0.0, // Should default to 0.7
+				Name:   "llm",
+				Prompt: "Test",
 			},
 			setupMock: func(m *mockConversationClient) {
 				m.On("ConverseAlpha2", mock.Anything, mock.AnythingOfType("client.ConversationRequestAlpha2")).
@@ -148,7 +153,7 @@ func TestConverseTool(t *testing.T) {
 					Return(nil, errors.New("connection refused"))
 			},
 			wantErr:     true,
-			wantContent: "dapr API error while conversing with LLM 'ollama'",
+			wantContent: `converse with LLM component "ollama"`,
 		},
 		{
 			name: "conversation failure - component not found",
@@ -161,7 +166,7 @@ func TestConverseTool(t *testing.T) {
 					Return(nil, errors.New("conversation component not found"))
 			},
 			wantErr:     true,
-			wantContent: "dapr API error while conversing with LLM",
+			wantContent: "converse with LLM component",
 		},
 		{
 			name: "conversation failure - empty outputs",
@@ -176,7 +181,7 @@ func TestConverseTool(t *testing.T) {
 					}, nil)
 			},
 			wantErr:     true,
-			wantContent: "LLM 'ollama' returned an empty outputs list",
+			wantContent: `LLM component "ollama" returned an empty outputs list`,
 		},
 		{
 			name: "conversation failure - empty choices",
@@ -195,7 +200,7 @@ func TestConverseTool(t *testing.T) {
 					}, nil)
 			},
 			wantErr:     true,
-			wantContent: "LLM 'ollama' returned no choices",
+			wantContent: `LLM component "ollama" returned no choices`,
 		},
 		{
 			name: "conversation with multiple choices",
@@ -248,9 +253,9 @@ func TestConverseTool(t *testing.T) {
 			mockClient := new(mockConversationClient)
 			tt.setupMock(mockClient)
 
-			daprClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := converseTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.converse(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -292,14 +297,14 @@ func TestConverseToolStructuredResult(t *testing.T) {
 			},
 		}, nil)
 
-	daprClient = mockClient
+	h, _ := newTestHandler(mockClient)
 
 	args := ConverseArgs{
 		Name:   "test-llm",
 		Prompt: "Test prompt",
 	}
 
-	result, structured, err := converseTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, structured, err := h.converse(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
@@ -327,18 +332,180 @@ func TestConverseToolRequestConstruction(t *testing.T) {
 		},
 	}, nil)
 
-	daprClient = mockClient
+	h, _ := newTestHandler(mockClient)
 
 	args := ConverseArgs{
-		Name:        "test-component",
-		Prompt:      "Test",
-		Temperature: 0.0, // Should default to 0.7
+		Name:   "test-component",
+		Prompt: "Test",
 	}
 
-	result, _, err := converseTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, _, err := h.converse(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
 
 	mockClient.AssertExpectations(t)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func newTestHandler(client ConversationClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}, newID: uuid.NewRandom}, &buf
+}
+
+func okResponse(contextID, content string) *dapr.ConversationResponseAlpha2 {
+	return &dapr.ConversationResponseAlpha2{
+		ContextID: contextID,
+		Outputs: []*dapr.ConversationResultAlpha2{{
+			Choices: []*dapr.ConversationResultChoicesAlpha2{{
+				Message:      &dapr.ConversationResultMessageAlpha2{Content: content},
+				FinishReason: "stop",
+			}},
+		}},
+	}
+}
+
+func TestConverseTemperature(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		temperature *float64
+		want        float64
+	}{
+		{name: "unset uses default", temperature: nil, want: DefaultTemperature},
+		{name: "zero is honored", temperature: ptr(0.0), want: 0.0},
+		{name: "explicit value", temperature: ptr(0.3), want: 0.3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mockConversationClient)
+			mockClient.On("ConverseAlpha2", mock.Anything, mock.MatchedBy(func(req dapr.ConversationRequestAlpha2) bool {
+				return req.Temperature != nil && *req.Temperature == tt.want &&
+					req.Parameters == nil && req.Metadata == nil && req.Tools == nil
+			})).Return(okResponse("", "ok"), nil)
+
+			h, _ := newTestHandler(mockClient)
+			res, _, err := h.converse(context.Background(), nil, ConverseArgs{Name: "llm", Prompt: "hi", Temperature: tt.temperature})
+			require.NoError(t, err)
+			assert.False(t, res.IsError)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestConverseContextID(t *testing.T) {
+	t.Parallel()
+	fixed := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	tests := []struct {
+		name         string
+		argContextID string
+		respContext  string
+		newID        func() (uuid.UUID, error)
+		wantSent     string
+		wantReturned string
+		wantErr      bool
+	}{
+		{
+			name:         "caller context is honored",
+			argContextID: "ctx-1",
+			newID:        func() (uuid.UUID, error) { return uuid.Nil, errors.New("must not be called") },
+			wantSent:     "ctx-1",
+			wantReturned: "ctx-1",
+		},
+		{
+			name:         "generated when missing",
+			newID:        func() (uuid.UUID, error) { return fixed, nil },
+			wantSent:     fixed.String(),
+			wantReturned: fixed.String(),
+		},
+		{
+			name:         "sidecar context wins",
+			argContextID: "ctx-1",
+			respContext:  "ctx-from-dapr",
+			newID:        uuid.NewRandom,
+			wantSent:     "ctx-1",
+			wantReturned: "ctx-from-dapr",
+		},
+		{
+			name:    "uuid failure is an error",
+			newID:   func() (uuid.UUID, error) { return uuid.Nil, errors.New("no entropy") },
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mockConversationClient)
+			if !tt.wantErr {
+				mockClient.On("ConverseAlpha2", mock.Anything, mock.MatchedBy(func(req dapr.ConversationRequestAlpha2) bool {
+					return req.ContextID != nil && *req.ContextID == tt.wantSent
+				})).Return(okResponse(tt.respContext, "ok"), nil)
+			}
+			h, _ := newTestHandler(mockClient)
+			h.newID = tt.newID
+
+			res, structured, err := h.converse(context.Background(), nil, ConverseArgs{Name: "llm", Prompt: "hi", ContextID: tt.argContextID})
+			require.NoError(t, err)
+			if tt.wantErr {
+				assert.True(t, res.IsError)
+				assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, "no entropy")
+				mockClient.AssertNotCalled(t, "ConverseAlpha2")
+				return
+			}
+			require.False(t, res.IsError)
+			assert.Equal(t, tt.wantReturned, structured.(map[string]any)[resultKeyContextID])
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.wantReturned)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestConverseValidationAndNilResponse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		args  ConverseArgs
+		setup func(*mockConversationClient)
+		want  string
+	}{
+		{name: "missing name and prompt", args: ConverseArgs{}, setup: func(*mockConversationClient) {}, want: "name, prompt"},
+		{
+			name: "nil response",
+			args: ConverseArgs{Name: "llm", Prompt: "hi"},
+			setup: func(m *mockConversationClient) {
+				m.On("ConverseAlpha2", mock.Anything, mock.Anything).Return(nil, nil)
+			},
+			want: "empty outputs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mockConversationClient)
+			tt.setup(mockClient)
+			h, _ := newTestHandler(mockClient)
+			res, _, err := h.converse(context.Background(), nil, tt.args)
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
+		})
+	}
+}
+
+func TestConverseResponseNotLogged(t *testing.T) {
+	t.Parallel()
+	const reply = "private-llm-reply-text"
+	mockClient := new(mockConversationClient)
+	mockClient.On("ConverseAlpha2", mock.Anything, mock.Anything).Return(okResponse("", reply), nil)
+
+	h, logs := newTestHandler(mockClient)
+	res, _, err := h.converse(context.Background(), nil, ConverseArgs{Name: "llm", Prompt: "secret prompt"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, reply)
+	assert.NotContains(t, logs.String(), reply)
+	assert.NotContains(t, logs.String(), "secret prompt")
 }
