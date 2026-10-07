@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -79,6 +80,22 @@ func TestRunHealthCheck(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+// TestHealthCheckMain is not parallel because it sets the package-level flag value.
+func TestHealthCheckMain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	original := *healthCheckAddr
+	t.Cleanup(func() { *healthCheckAddr = original })
+	*healthCheckAddr = serverAddr(t, srv)
+
+	var errOut bytes.Buffer
+	assert.Equal(t, exitCodeFailure, healthCheckMain(&errOut))
+	assert.Contains(t, errOut.String(), "health check failed: health check returned status 503")
 }
 
 func TestRunHealthCheckConnectionRefused(t *testing.T) {
