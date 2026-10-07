@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"bytes"
 	"io"
 	"os"
@@ -36,7 +37,7 @@ func TestRedirectDaprSDKLogsKeepsStdoutClean(t *testing.T) {
 	t.Cleanup(func() { redirectDaprSDKLogs(os.Stderr) })
 
 	stdout := captureStdout(t, func() {
-		_, err := dapr.NewClientWithAddress("127.0.0.1:1")
+		_, err := dapr.NewClientWithAddressContext(context.Background(), "127.0.0.1:1")
 		require.Error(t, err)
 	})
 

@@ -62,7 +62,7 @@ Settings specific to the HTTP transport:
 | Page | Purpose |
 | --- | --- |
 | [Overview](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/) | What the server is, architecture, capabilities, when to use it |
-| [Getting started](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-getting-started/) | Install, configure components, run, verify, full env var reference |
+| [Getting started](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-getting-started/) | Install, configure components, run, verify |
 | [Tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/) | Schemas, inputs, outputs, and safety flags for every tool |
 | [Configuration](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-configuration/) | Environment variables, flags, and transport settings |
 | [Authentication](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-authentication/) | OIDC, SPIFFE, Dapr Sentry, hybrid mode |
