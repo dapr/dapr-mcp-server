@@ -1,15 +1,19 @@
 package actors
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
@@ -79,7 +83,7 @@ func TestInvokeActorMethodTool(t *testing.T) {
 					Return(nil, errors.New("actor type not registered"))
 			},
 			wantErr:     true,
-			wantContent: "dapr InvokeActor failed",
+			wantContent: "invoke method",
 		},
 		{
 			name: "actor invocation failure - connection error",
@@ -94,7 +98,7 @@ func TestInvokeActorMethodTool(t *testing.T) {
 					Return(nil, errors.New("connection refused"))
 			},
 			wantErr:     true,
-			wantContent: "dapr InvokeActor failed",
+			wantContent: "invoke method",
 		},
 		{
 			name: "actor invocation failure - method error",
@@ -109,7 +113,7 @@ func TestInvokeActorMethodTool(t *testing.T) {
 					Return(nil, errors.New("division by zero"))
 			},
 			wantErr:     true,
-			wantContent: "dapr InvokeActor failed",
+			wantContent: "invoke method",
 		},
 		{
 			name: "actor invocation with empty data",
@@ -133,9 +137,9 @@ func TestInvokeActorMethodTool(t *testing.T) {
 			mockClient := new(mocks.MockDaprClient)
 			tt.setupMock(mockClient)
 
-			actorClient = mockClient
+			h, _ := newTestHandler(mockClient)
 
-			result, _, err := invokeActorMethodTool(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, _, err := h.invokeActorMethod(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -154,10 +158,49 @@ func TestRegisterTools(t *testing.T) {
 	mockClient := new(mocks.MockDaprClient)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
-	// Should not panic
 	RegisterTools(server, mockClient, nil)
+}
 
-	assert.Equal(t, mockClient, actorClient)
+func newTestHandler(client ActorClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}}, &buf
+}
+
+func TestInvokeActorMethodNilResponse(t *testing.T) {
+	t.Parallel()
+	mockClient := new(mocks.MockDaprClient)
+	mockClient.On("InvokeActor", mock.Anything, mock.Anything).Return(nil, nil)
+
+	h, _ := newTestHandler(mockClient)
+	res, structured, err := h.invokeActorMethod(context.Background(), nil, InvokeActorMethodArgs{ActorType: "t", ActorID: "1", Method: "m"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Empty(t, structured.(map[string]string)["actor_response"])
+}
+
+func TestInvokeActorMethodValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args InvokeActorMethodArgs
+		want string
+	}{
+		{name: "missing all", args: InvokeActorMethodArgs{}, want: "actorType, actorID, method"},
+		{name: "missing id", args: InvokeActorMethodArgs{ActorType: "t", Method: "m"}, want: "actorID"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mocks.MockDaprClient)
+			h, _ := newTestHandler(mockClient)
+			res, _, err := h.invokeActorMethod(context.Background(), nil, tt.args)
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
+			assert.Empty(t, mockClient.Calls)
+		})
+	}
 }
 
 // mockActorClient implements ActorClient for testing
@@ -178,7 +221,7 @@ func TestInvokeActorMethodToolWithInterfaceMock(t *testing.T) {
 	mockActor.On("InvokeActor", mock.Anything, mock.AnythingOfType("*client.InvokeActorRequest")).
 		Return(&dapr.InvokeActorResponse{Data: []byte(`{"result": "success"}`)}, nil)
 
-	actorClient = mockActor
+	h, _ := newTestHandler(mockActor)
 
 	args := InvokeActorMethodArgs{
 		ActorType: "test-actor",
@@ -187,7 +230,7 @@ func TestInvokeActorMethodToolWithInterfaceMock(t *testing.T) {
 		Data:      `{"input": "test"}`,
 	}
 
-	result, structured, err := invokeActorMethodTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, structured, err := h.invokeActorMethod(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
@@ -212,7 +255,7 @@ func TestInvokeActorMethodToolRequestContent(t *testing.T) {
 			string(req.Data) == `{"key": "value"}`
 	})).Return(&dapr.InvokeActorResponse{Data: []byte(`{}`)}, nil)
 
-	actorClient = mockActor
+	h, _ := newTestHandler(mockActor)
 
 	args := InvokeActorMethodArgs{
 		ActorType: "test-type",
@@ -221,7 +264,7 @@ func TestInvokeActorMethodToolRequestContent(t *testing.T) {
 		Data:      `{"key": "value"}`,
 	}
 
-	result, _, err := invokeActorMethodTool(context.Background(), &mcp.CallToolRequest{}, args)
+	result, _, err := h.invokeActorMethod(context.Background(), &mcp.CallToolRequest{}, args)
 
 	assert.NoError(t, err)
 	assert.False(t, result.IsError)
