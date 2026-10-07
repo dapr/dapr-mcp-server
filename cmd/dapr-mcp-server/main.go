@@ -111,12 +111,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	toolMetrics, err := telemetry.NewToolMetrics()
 	if err != nil {
-		logger.Warn("Failed to initialize tool metrics", "error", err)
+		logger.Warn("Failed to initialize tool metrics, tool calls will run without metrics", "error", err)
 	}
 
 	httpMetrics, err := telemetry.NewHTTPMetrics()
 	if err != nil {
-		logger.Warn("Failed to initialize HTTP metrics", "error", err)
+		logger.Warn("Failed to initialize HTTP metrics, requests will be served without metrics", "error", err)
 	}
 
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
