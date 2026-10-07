@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -39,7 +40,7 @@ func (h *OTELHandler) Handle(ctx context.Context, record slog.Record) error {
 	rec.SetObservedTimestamp(time.Now())
 	rec.SetSeverity(slogLevelToOTEL(record.Level))
 	rec.SetSeverityText(record.Level.String())
-	rec.SetBody(log.StringValue(record.Message))
+	rec.SetBody(attribute.StringValue(record.Message))
 
 	// Add pre-configured attributes
 	for _, a := range h.attrs {
@@ -95,25 +96,25 @@ func slogLevelToOTEL(level slog.Level) log.Severity {
 	}
 }
 
-// slogAttrToOTEL converts a slog.Attr to an OTEL log.KeyValue.
-func slogAttrToOTEL(a slog.Attr) log.KeyValue {
+// slogAttrToOTEL converts a slog.Attr to an OTEL attribute.KeyValue.
+func slogAttrToOTEL(a slog.Attr) attribute.KeyValue {
 	key := a.Key
 	val := a.Value
 
 	switch val.Kind() {
 	case slog.KindString:
-		return log.String(key, val.String())
+		return attribute.String(key, val.String())
 	case slog.KindInt64:
-		return log.Int64(key, val.Int64())
+		return attribute.Int64(key, val.Int64())
 	case slog.KindFloat64:
-		return log.Float64(key, val.Float64())
+		return attribute.Float64(key, val.Float64())
 	case slog.KindBool:
-		return log.Bool(key, val.Bool())
+		return attribute.Bool(key, val.Bool())
 	case slog.KindTime:
-		return log.String(key, val.Time().Format(time.RFC3339))
+		return attribute.String(key, val.Time().Format(time.RFC3339))
 	case slog.KindDuration:
-		return log.String(key, val.Duration().String())
+		return attribute.String(key, val.Duration().String())
 	default:
-		return log.String(key, val.String())
+		return attribute.String(key, val.String())
 	}
 }
