@@ -15,7 +15,7 @@ COPY . .
 
 # Build the binary
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o dapr-mcp-server \
     ./cmd/dapr-mcp-server

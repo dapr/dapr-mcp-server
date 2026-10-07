@@ -1,0 +1,15 @@
+.git
+.github
+.claude
+test/
+*.md
+coverage.*
+*.out
+*.coverprofile
+profile.cov
+/dapr-mcp-server
+.env
+*.pem
+components/keys/
+keys/
+.venv/
