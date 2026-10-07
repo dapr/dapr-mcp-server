@@ -24,9 +24,23 @@ func (m *MockAuthenticator) Authenticate(ctx context.Context, token string) (*au
 }
 
 // Mode mocks the Mode method.
+// Without an expectation for Mode it returns an empty mode instead of panicking,
+// because callers such as the auth middleware log it on every failure.
 func (m *MockAuthenticator) Mode() auth.AuthMode {
-	args := m.Called()
-	return args.Get(0).(auth.AuthMode)
+	if !m.hasExpectation("Mode") {
+		return ""
+	}
+	mode, _ := m.Called().Get(0).(auth.AuthMode)
+	return mode
+}
+
+func (m *MockAuthenticator) hasExpectation(method string) bool {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == method {
+			return true
+		}
+	}
+	return false
 }
 
 // Ensure MockAuthenticator implements auth.Authenticator
