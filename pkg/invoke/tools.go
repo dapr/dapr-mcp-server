@@ -4,6 +4,7 @@ package invoke
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -31,6 +32,13 @@ const (
 	DefaultHTTPVerb = http.MethodPost
 )
 
+// reservedHeaderPrefixes are metadata key prefixes the Dapr sidecar and gRPC use for themselves,
+// such as dapr-api-token and grpc-timeout, so a tool caller must not set them.
+var reservedHeaderPrefixes = []string{"dapr-", "grpc-", ":"}
+
+// errInvalidHeader is wrapped by the error validateHeaders returns.
+var errInvalidHeader = errors.New("invalid metadata key")
+
 // allowedHTTPVerbs are the verbs Dapr service invocation accepts that make
 // sense for a tool call.
 var allowedHTTPVerbs = []string{
@@ -55,7 +63,7 @@ type InvokeServiceArgs struct {
 	Data        string            `json:"data,omitempty" jsonschema:"The body payload for the request, typically a JSON string."`
 	HTTPVerb    string            `json:"httpVerb,omitempty" jsonschema:"The HTTP verb to use: GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS. Default is 'POST'."`
 	ContentType string            `json:"contentType,omitempty" jsonschema:"Optional content type of data. Defaults to application/json when data is valid JSON, text/plain otherwise."`
-	Metadata    map[string]string `json:"metadata,omitempty" jsonschema:"Optional key-value pairs to send to the target service as HTTP headers."`
+	Metadata    map[string]string `json:"metadata,omitempty" jsonschema:"Optional key-value pairs to send to the target service as HTTP headers. Keys starting with 'dapr-' or 'grpc-' are reserved."`
 }
 
 type handler struct {
@@ -72,6 +80,22 @@ func normalizeVerb(verb string) (string, error) {
 		return "", fmt.Errorf("unsupported httpVerb %q: use one of %s", verb, strings.Join(allowedHTTPVerbs, ", "))
 	}
 	return verb, nil
+}
+
+// validateHeaders rejects empty keys and keys reserved by Dapr or gRPC.
+func validateHeaders(headers map[string]string) error {
+	for k := range headers {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if key == "" {
+			return fmt.Errorf("%w: keys must not be empty", errInvalidHeader)
+		}
+		for _, prefix := range reservedHeaderPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				return fmt.Errorf("%w %q: keys starting with %q are reserved", errInvalidHeader, k, prefix)
+			}
+		}
+	}
+	return nil
 }
 
 // withHeaders adds headers as outgoing gRPC metadata.
@@ -103,6 +127,9 @@ func (h *handler) invokeService(ctx context.Context, _ *mcp.CallToolRequest, arg
 	}
 	verb, err := normalizeVerb(args.HTTPVerb)
 	if err != nil {
+		return call.Fail(err), nil, nil
+	}
+	if err = validateHeaders(args.Metadata); err != nil {
 		return call.Fail(err), nil, nil
 	}
 

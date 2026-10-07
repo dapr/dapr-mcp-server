@@ -247,6 +247,26 @@ func TestInvokeServiceSendsHeadersAsOutgoingMetadata(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestInvokeServiceRejectsReservedHeaders(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"dapr-api-token", "Dapr-App-Id", "grpc-timeout", ":authority", " "} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mocks.MockDaprClient)
+			h, _ := newTestHandler(mockClient)
+
+			res, _, err := h.invokeService(context.Background(), nil, InvokeServiceArgs{
+				AppID:    "app",
+				Method:   "m",
+				Metadata: map[string]string{key: "v"},
+			})
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			mockClient.AssertNotCalled(t, "InvokeMethodWithContent")
+		})
+	}
+}
+
 // mockInvokeClient implements InvokeClient for testing
 type mockInvokeClient struct {
 	mock.Mock
