@@ -252,6 +252,11 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "zero-value config fails closed",
+			config:  Config{},
+			wantErr: true,
+		},
+		{
 			name:    "unknown mode fails closed",
 			config:  Config{Mode: AuthMode("bogus")},
 			wantErr: true,

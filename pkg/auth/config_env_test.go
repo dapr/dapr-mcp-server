@@ -54,6 +54,18 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 			wantEnabled: true,
 		},
 		{
+			name:        "typo in mode fails closed",
+			env:         map[string]string{envAuthMode: "oidcc"},
+			wantErr:     ErrUnsupportedMethod,
+			errMsg:      "oidcc",
+			wantEnabled: true,
+		},
+		{
+			name:        "mode is case and space insensitive",
+			env:         map[string]string{envAuthMode: " OIDC ", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
+			wantEnabled: true,
+		},
+		{
 			name:    "removed AUTH_ENABLED true",
 			env:     map[string]string{envAuthEnabled: "true"},
 			wantErr: ErrAuthEnabledRemoved,
@@ -64,9 +76,10 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 			wantErr: ErrAuthEnabledRemoved,
 		},
 		{
-			name:    "removed AUTH_ENABLED alongside a mode",
-			env:     map[string]string{envAuthEnabled: "true", envAuthMode: "oidc", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
-			wantErr: ErrAuthEnabledRemoved,
+			name:        "removed AUTH_ENABLED alongside a mode",
+			env:         map[string]string{envAuthEnabled: "true", envAuthMode: "oidc", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
+			wantErr:     ErrAuthEnabledRemoved,
+			wantEnabled: true,
 		},
 		{
 			name:   "invalid boolean for sentry enabled",
@@ -95,7 +108,8 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 				envSentryJWKSURL: "http://sentry", envSentryTrustDomain: "public",
 				envSentryAudience: "public", envSentryRefreshInterval: "1s",
 			},
-			wantErr: ErrSentryRefreshInterval,
+			wantErr:     ErrSentryRefreshInterval,
+			wantEnabled: true,
 		},
 		{
 			name: "sentry without audience",
@@ -103,7 +117,8 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 				envAuthMode:      "dapr-sentry",
 				envSentryJWKSURL: "http://sentry", envSentryTrustDomain: "public",
 			},
-			wantErr: ErrSentryAudienceRequired,
+			wantErr:     ErrSentryAudienceRequired,
+			wantEnabled: true,
 		},
 		{
 			name:    "skip paths catch-all",
@@ -135,13 +150,14 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 
 			cfg := DefaultConfig()
 			err := cfg.Validate()
-			if tt.errMsg == "" && (tt.wantErr == nil || tt.wantEnabled) {
-				assert.Equal(t, tt.wantEnabled, cfg.Enabled())
-			}
+			assert.Equal(t, tt.wantEnabled, cfg.Enabled())
 
 			switch {
 			case tt.wantErr != nil:
 				require.ErrorIs(t, err, tt.wantErr)
+				if tt.errMsg != "" {
+					require.ErrorContains(t, err, tt.errMsg)
+				}
 			case tt.errMsg != "":
 				require.ErrorContains(t, err, tt.errMsg)
 			default:

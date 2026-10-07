@@ -80,7 +80,10 @@ var (
 // Config holds the authentication configuration.
 type Config struct {
 	// Mode is the authentication mode.
-	// Unset or ModeDisabled turns authentication off.
+	// Only ModeDisabled turns authentication off; any other value, including
+	// the empty string of a zero-value Config, requires authentication and
+	// fails Validate unless it names a supported mode.
+	// DefaultConfig maps an unset AUTH_MODE to ModeDisabled.
 	Mode AuthMode
 	// SkipPaths are paths that don't require authentication.
 	// Entries must start with "/"; a trailing "*" matches any path with that prefix.
@@ -100,7 +103,8 @@ type Config struct {
 	envErr error
 }
 
-// Enabled reports whether authentication is required, which is true for any mode other than ModeDisabled.
+// Enabled reports whether authentication is required.
+// It is true for every mode other than ModeDisabled, so an unrecognized mode fails closed.
 func (c Config) Enabled() bool {
 	return c.Mode != ModeDisabled
 }
@@ -323,7 +327,7 @@ func (c *Config) Validate() error {
 		}
 		return errors.Join(c.OIDC.Validate(), c.SPIFFE.Validate(), c.DaprSentry.Validate())
 	default:
-		return ErrUnsupportedMethod
+		return fmt.Errorf("%w: unknown AUTH_MODE %q", ErrUnsupportedMethod, c.Mode)
 	}
 }
 
