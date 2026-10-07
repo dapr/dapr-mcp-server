@@ -13,7 +13,7 @@ import (
 
 // Environment variables read by DefaultConfig.
 const (
-	envAuthEnabled           = "AUTH_ENABLED"
+	envAuthEnabled           = "AUTH_ENABLED" // removed; still read to reject it
 	envAuthMode              = "AUTH_MODE"
 	envAuthSkipPaths         = "AUTH_SKIP_PATHS"
 	envOIDCEnabled           = "OIDC_ENABLED"
@@ -55,10 +55,8 @@ var (
 
 // Configuration errors returned by the Validate methods.
 var (
-	// ErrModeWithoutEnabled is returned when AUTH_MODE selects an auth method but AUTH_ENABLED is not true.
-	ErrModeWithoutEnabled = errors.New("AUTH_MODE is set but AUTH_ENABLED is not true; set AUTH_ENABLED=true or unset AUTH_MODE")
-	// ErrEnabledWithoutMode is returned when AUTH_ENABLED is true but AUTH_MODE does not select an auth method.
-	ErrEnabledWithoutMode = errors.New("AUTH_ENABLED is true but AUTH_MODE does not select an authentication method")
+	// ErrAuthEnabledRemoved is returned when the removed AUTH_ENABLED variable is set.
+	ErrAuthEnabledRemoved = errors.New("AUTH_ENABLED is no longer supported; AUTH_MODE alone turns authentication on (unset or \"disabled\" turns it off)")
 	// ErrInvalidSkipPath is returned when an AUTH_SKIP_PATHS entry is unsafe or malformed.
 	ErrInvalidSkipPath = errors.New("invalid AUTH_SKIP_PATHS entry")
 	// ErrOIDCIssuerURLRequired is returned when OIDC is enabled without OIDC_ISSUER_URL.
@@ -81,9 +79,8 @@ var (
 
 // Config holds the authentication configuration.
 type Config struct {
-	// Enabled determines if authentication is required.
-	Enabled bool
 	// Mode is the authentication mode.
+	// Unset or ModeDisabled turns authentication off.
 	Mode AuthMode
 	// SkipPaths are paths that don't require authentication.
 	// Entries must start with "/"; a trailing "*" matches any path with that prefix.
@@ -101,6 +98,11 @@ type Config struct {
 	// envErr records environment variables DefaultConfig could not parse.
 	// Validate reports it.
 	envErr error
+}
+
+// Enabled reports whether authentication is required, which is true for any mode other than ModeDisabled.
+func (c Config) Enabled() bool {
+	return c.Mode != ModeDisabled
 }
 
 // OIDCConfig holds OIDC-specific configuration.
@@ -153,7 +155,10 @@ type DaprSentryConfig struct {
 // DefaultConfig returns configuration from environment variables.
 // Values that cannot be parsed are reported by Validate.
 func DefaultConfig() Config {
-	enabled, enabledErr := parseBoolEnv(envAuthEnabled)
+	var removedErr error
+	if os.Getenv(envAuthEnabled) != "" {
+		removedErr = ErrAuthEnabledRemoved
+	}
 	mode := AuthMode(strings.ToLower(strings.TrimSpace(os.Getenv(envAuthMode))))
 	if mode == "" {
 		mode = ModeDisabled
@@ -180,13 +185,12 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		Enabled:    enabled,
 		Mode:       mode,
 		SkipPaths:  skipPaths,
 		OIDC:       oidcConfig,
 		SPIFFE:     spiffeConfig,
 		DaprSentry: daprSentryConfig,
-		envErr:     errors.Join(enabledErr, oidcErr, spiffeErr, sentryErr),
+		envErr:     errors.Join(removedErr, oidcErr, spiffeErr, sentryErr),
 	}
 }
 
@@ -293,10 +297,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if !c.Enabled {
-		if c.Mode != "" && c.Mode != ModeDisabled {
-			return fmt.Errorf("%w (AUTH_MODE=%q)", ErrModeWithoutEnabled, c.Mode)
-		}
+	if !c.Enabled() {
 		return nil
 	}
 
@@ -321,8 +322,6 @@ func (c *Config) Validate() error {
 			return ErrUnsupportedMethod
 		}
 		return errors.Join(c.OIDC.Validate(), c.SPIFFE.Validate(), c.DaprSentry.Validate())
-	case ModeDisabled:
-		return ErrEnabledWithoutMode
 	default:
 		return ErrUnsupportedMethod
 	}

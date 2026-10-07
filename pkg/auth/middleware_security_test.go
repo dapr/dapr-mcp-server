@@ -138,7 +138,7 @@ func TestMiddlewareNotBypassedThroughServeMux(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	cfg := Config{Enabled: true, Mode: ModeOIDC, SkipPaths: []string{"/livez", "/livez/*"}}
+	cfg := Config{Mode: ModeOIDC, SkipPaths: []string{"/livez", "/livez/*"}}
 	require.NoError(t, validateSkipPaths(cfg.SkipPaths))
 	handler := NewMiddleware(cfg, []Authenticator{stubAuthenticator{valid: validToken}}, nil).Handler(mux)
 	server := httptest.NewServer(handler)
@@ -178,7 +178,7 @@ func TestMiddlewareRedactsSensitiveHeaders(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	cfg := Config{Enabled: true, Mode: ModeOIDC, DaprSentry: DaprSentryConfig{TokenHeader: "X-My-Auth"}}
+	cfg := Config{Mode: ModeOIDC, DaprSentry: DaprSentryConfig{TokenHeader: "X-My-Auth"}}
 	handler := NewMiddleware(cfg, []Authenticator{stubAuthenticator{valid: "custom-secret"}}, logger).
 		Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
@@ -210,7 +210,7 @@ func TestMiddlewareRedactsSensitiveHeaders(t *testing.T) {
 
 func TestMiddlewareRejectsMalformedBearer(t *testing.T) {
 	t.Parallel()
-	handler := NewMiddleware(Config{Enabled: true, Mode: ModeOIDC}, []Authenticator{stubAuthenticator{valid: "tok"}}, nil).
+	handler := NewMiddleware(Config{Mode: ModeOIDC}, []Authenticator{stubAuthenticator{valid: "tok"}}, nil).
 		Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	for _, value := range []string{"Bearer ", "Bearer  tok", "Bearer tok extra", "Basic tok"} {

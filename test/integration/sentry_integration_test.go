@@ -103,7 +103,6 @@ func TestMiddlewareWithCustomHeader(t *testing.T) {
 
 	// Configure auth
 	cfg := auth.Config{
-		Enabled:   true,
 		Mode:      auth.ModeDaprSentry,
 		SkipPaths: []string{"/livez", "/readyz"},
 		DaprSentry: auth.DaprSentryConfig{
@@ -171,7 +170,7 @@ func TestMiddlewareWithMockAuthenticator(t *testing.T) {
 	mockAuth := new(mocks.MockAuthenticator)
 	mockAuth.On("Authenticate", mock.Anything, "bad-token").Return(nil, auth.ErrInvalidToken)
 
-	middleware := auth.NewMiddleware(auth.Config{Enabled: true, Mode: auth.ModeOIDC}, []auth.Authenticator{mockAuth}, nil)
+	middleware := auth.NewMiddleware(auth.Config{Mode: auth.ModeOIDC}, []auth.Authenticator{mockAuth}, nil)
 	handler := middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

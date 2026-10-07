@@ -59,7 +59,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if !m.config.Enabled || m.config.Mode == ModeDisabled {
+		if !m.config.Enabled() {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -33,18 +33,17 @@ func (m *MockAuthenticator) Mode() AuthMode {
 
 func TestNewMiddleware(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	middleware := NewMiddleware(cfg, nil, nil)
 
 	assert.NotNil(t, middleware)
-	assert.Equal(t, cfg.Enabled, middleware.config.Enabled)
+	assert.Equal(t, cfg.Enabled(), middleware.config.Enabled())
 }
 
 func TestNewMiddlewareWithLogger(t *testing.T) {
-	cfg := Config{Enabled: true}
+	cfg := Config{Mode: ModeOIDC}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	middleware := NewMiddleware(cfg, nil, logger)
@@ -54,7 +53,7 @@ func TestNewMiddlewareWithLogger(t *testing.T) {
 }
 
 func TestNewMiddlewareWithNilLogger(t *testing.T) {
-	cfg := Config{Enabled: true}
+	cfg := Config{Mode: ModeOIDC}
 
 	middleware := NewMiddleware(cfg, nil, nil)
 
@@ -64,7 +63,6 @@ func TestNewMiddlewareWithNilLogger(t *testing.T) {
 
 func TestMiddlewareHandler_SkipPaths(t *testing.T) {
 	cfg := Config{
-		Enabled:   true,
 		Mode:      ModeOIDC,
 		SkipPaths: []string{"/livez", "/readyz", "/api/*"},
 	}
@@ -101,8 +99,7 @@ func TestMiddlewareHandler_SkipPaths(t *testing.T) {
 
 func TestMiddlewareHandler_AuthDisabled(t *testing.T) {
 	cfg := Config{
-		Enabled: false,
-		Mode:    ModeDisabled,
+		Mode: ModeDisabled,
 	}
 
 	middleware := NewMiddleware(cfg, nil, nil)
@@ -121,8 +118,7 @@ func TestMiddlewareHandler_AuthDisabled(t *testing.T) {
 
 func TestMiddlewareHandler_ModeDisabled(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeDisabled,
+		Mode: ModeDisabled,
 	}
 
 	middleware := NewMiddleware(cfg, nil, nil)
@@ -141,8 +137,7 @@ func TestMiddlewareHandler_ModeDisabled(t *testing.T) {
 
 func TestMiddlewareHandler_NoToken(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	mockAuth := new(MockAuthenticator)
@@ -164,8 +159,7 @@ func TestMiddlewareHandler_NoToken(t *testing.T) {
 
 func TestMiddlewareHandler_ValidBearerToken(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	mockAuth := new(MockAuthenticator)
@@ -195,8 +189,7 @@ func TestMiddlewareHandler_ValidBearerToken(t *testing.T) {
 
 func TestMiddlewareHandler_RawToken(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	mockAuth := new(MockAuthenticator)
@@ -222,8 +215,7 @@ func TestMiddlewareHandler_RawToken(t *testing.T) {
 
 func TestMiddlewareHandler_CustomTokenHeader(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeDaprSentry,
+		Mode: ModeDaprSentry,
 		DaprSentry: DaprSentryConfig{
 			TokenHeader: "X-Dapr-Token",
 		},
@@ -252,8 +244,7 @@ func TestMiddlewareHandler_CustomTokenHeader(t *testing.T) {
 
 func TestMiddlewareHandler_InvalidToken(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	mockAuth := new(MockAuthenticator)
@@ -280,8 +271,7 @@ func TestMiddlewareHandler_InvalidToken(t *testing.T) {
 
 func TestMiddlewareHandler_MultipleAuthenticators(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeHybrid,
+		Mode: ModeHybrid,
 	}
 
 	mockAuth1 := new(MockAuthenticator)
@@ -314,8 +304,7 @@ func TestMiddlewareHandler_MultipleAuthenticators(t *testing.T) {
 
 func TestMiddlewareHandler_AllAuthenticatorsFail(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeHybrid,
+		Mode: ModeHybrid,
 	}
 
 	mockAuth1 := new(MockAuthenticator)
@@ -511,8 +500,7 @@ func TestNoopMiddleware(t *testing.T) {
 
 func TestMiddlewareHandler_BearerCaseInsensitive(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Mode:    ModeOIDC,
+		Mode: ModeOIDC,
 	}
 
 	mockAuth := new(MockAuthenticator)

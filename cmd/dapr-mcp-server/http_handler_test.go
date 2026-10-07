@@ -46,7 +46,6 @@ func clearAuthEnv(t *testing.T) {
 
 func enableSentryAuth(t *testing.T, jwksURL string) {
 	t.Helper()
-	t.Setenv("AUTH_ENABLED", "true")
 	t.Setenv("AUTH_MODE", string(auth.ModeDaprSentry))
 	t.Setenv("DAPR_SENTRY_JWKS_URL", jwksURL)
 	t.Setenv("DAPR_SENTRY_TRUST_DOMAIN", "example.test")

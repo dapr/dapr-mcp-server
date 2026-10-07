@@ -242,7 +242,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 
 	var authenticators []auth.Authenticator
 	authMiddleware := auth.NoopMiddleware
-	if authConfig.Enabled && authConfig.Mode != auth.ModeDisabled {
+	if authConfig.Enabled() {
 		logger.Info("Starting authentication initialization", "mode", authConfig.Mode)
 		var err error
 		authenticators, err = buildAuthenticators(ctx, authConfig, logger)
@@ -272,7 +272,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	// Telemetry is the outer layer so metrics cover every request, including auth failures.
 	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
 
-	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled)
+	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled())
 	return corsMiddleware(os.Getenv(corsOriginEnv), mux), authenticators, nil
 }
 

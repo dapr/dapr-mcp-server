@@ -10,41 +10,63 @@ import (
 
 func TestDefaultConfigEnvValidation(t *testing.T) {
 	tests := []struct {
-		name    string
-		env     map[string]string
-		wantErr error
-		errMsg  string
+		name        string
+		env         map[string]string
+		wantErr     error
+		errMsg      string
+		wantEnabled bool
 	}{
 		{
-			name:    "mode set without enabled",
-			env:     map[string]string{envAuthMode: "oidc", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
-			wantErr: ErrModeWithoutEnabled,
+			name: "no mode is disabled and valid",
+			env:  map[string]string{},
 		},
 		{
-			name:    "enabled without mode",
-			env:     map[string]string{envAuthEnabled: "true"},
-			wantErr: ErrEnabledWithoutMode,
-		},
-		{
-			name:    "enabled with mode disabled",
-			env:     map[string]string{envAuthEnabled: "true", envAuthMode: "disabled"},
-			wantErr: ErrEnabledWithoutMode,
-		},
-		{
-			name: "mode disabled without enabled",
+			name: "mode disabled is valid",
 			env:  map[string]string{envAuthMode: "disabled"},
 		},
 		{
-			name:   "invalid boolean for enabled",
-			env:    map[string]string{envAuthEnabled: "yes please", envAuthMode: "oidc"},
-			errMsg: envAuthEnabled,
+			name:        "oidc mode enables",
+			env:         map[string]string{envAuthMode: "oidc", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
+			wantEnabled: true,
 		},
 		{
-			name: "enabled accepts 1",
+			name:        "spiffe mode enables",
+			env:         map[string]string{envAuthMode: "spiffe", envSPIFFETrustDomain: "example.test", envSPIFFEServerID: "spiffe://example.test/server"},
+			wantEnabled: true,
+		},
+		{
+			name: "dapr-sentry mode enables",
 			env: map[string]string{
-				envAuthEnabled: "1", envAuthMode: "oidc",
-				envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c",
+				envAuthMode: "dapr-sentry", envSentryJWKSURL: "http://sentry",
+				envSentryTrustDomain: "public", envSentryAudience: "public",
 			},
+			wantEnabled: true,
+		},
+		{
+			name:        "hybrid mode with one method enabled",
+			env:         map[string]string{envAuthMode: "hybrid", envOIDCEnabled: "true", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
+			wantEnabled: true,
+		},
+		{
+			name:        "hybrid mode with no method enabled",
+			env:         map[string]string{envAuthMode: "hybrid"},
+			wantErr:     ErrUnsupportedMethod,
+			wantEnabled: true,
+		},
+		{
+			name:    "removed AUTH_ENABLED true",
+			env:     map[string]string{envAuthEnabled: "true"},
+			wantErr: ErrAuthEnabledRemoved,
+		},
+		{
+			name:    "removed AUTH_ENABLED false",
+			env:     map[string]string{envAuthEnabled: "false"},
+			wantErr: ErrAuthEnabledRemoved,
+		},
+		{
+			name:    "removed AUTH_ENABLED alongside a mode",
+			env:     map[string]string{envAuthEnabled: "true", envAuthMode: "oidc", envOIDCIssuerURL: "https://issuer", envOIDCClientID: "c"},
+			wantErr: ErrAuthEnabledRemoved,
 		},
 		{
 			name:   "invalid boolean for sentry enabled",
@@ -69,7 +91,7 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 		{
 			name: "refresh interval below floor",
 			env: map[string]string{
-				envAuthEnabled: "true", envAuthMode: "dapr-sentry",
+				envAuthMode:      "dapr-sentry",
 				envSentryJWKSURL: "http://sentry", envSentryTrustDomain: "public",
 				envSentryAudience: "public", envSentryRefreshInterval: "1s",
 			},
@@ -78,7 +100,7 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 		{
 			name: "sentry without audience",
 			env: map[string]string{
-				envAuthEnabled: "true", envAuthMode: "dapr-sentry",
+				envAuthMode:      "dapr-sentry",
 				envSentryJWKSURL: "http://sentry", envSentryTrustDomain: "public",
 			},
 			wantErr: ErrSentryAudienceRequired,
@@ -113,6 +135,9 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 
 			cfg := DefaultConfig()
 			err := cfg.Validate()
+			if tt.errMsg == "" && (tt.wantErr == nil || tt.wantEnabled) {
+				assert.Equal(t, tt.wantEnabled, cfg.Enabled())
+			}
 
 			switch {
 			case tt.wantErr != nil:
