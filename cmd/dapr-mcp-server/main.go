@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -40,6 +41,7 @@ const (
 	httpShutdownTimeout   = 15 * time.Second
 	telemetryFlushTimeout = 10 * time.Second
 	healthCheckURL        = "http://localhost:8080/livez"
+	logLevelEnv           = "DAPR_MCP_SERVER_LOG_LEVEL"
 )
 
 var (
@@ -61,9 +63,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: telemetry.ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
-	}))
+	logger := newLogger(os.Stderr)
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -73,6 +73,14 @@ func main() {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// newLogger builds the JSON logger that writes to w.
+// main passes os.Stderr because in the stdio transport stdout carries the JSON-RPC stream.
+func newLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level: telemetry.ParseLogLevel(os.Getenv(logLevelEnv)),
+	}))
 }
 
 // runHealthCheck probes the liveness endpoint of a locally running server.
