@@ -19,18 +19,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
-	actor "github.com/dapr/dapr-mcp-server/pkg/actors"
 	"github.com/dapr/dapr-mcp-server/pkg/auth"
-	binding "github.com/dapr/dapr-mcp-server/pkg/bindings"
-	conversation "github.com/dapr/dapr-mcp-server/pkg/conversation"
-	crypto "github.com/dapr/dapr-mcp-server/pkg/crypto"
 	"github.com/dapr/dapr-mcp-server/pkg/health"
-	invoke "github.com/dapr/dapr-mcp-server/pkg/invoke"
-	lock "github.com/dapr/dapr-mcp-server/pkg/lock"
-	metadata "github.com/dapr/dapr-mcp-server/pkg/metadata"
-	pubsub "github.com/dapr/dapr-mcp-server/pkg/pubsub"
-	secret "github.com/dapr/dapr-mcp-server/pkg/secrets"
-	state "github.com/dapr/dapr-mcp-server/pkg/state"
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
@@ -50,7 +40,6 @@ var (
 
 	httpAddr    = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
 	healthCheck = flag.Bool("health-check", false, "run a health check against the running server and exit")
-	DaprClient  dapr.Client
 )
 
 func main() {
@@ -118,7 +107,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 				slog.Error("Error shutting down telemetry", "error", flushErr)
 			}
 		}()
-		// Switch to the OTEL-wrapped logger that was set as default
+		// When OTEL log export is enabled, Initialize installs a default logger that also exports records.
+		// Otherwise the default is still the logger main installed, so this is a no-op.
 		logger = slog.Default()
 		logger.Info("OpenTelemetry initialized successfully")
 	}
@@ -136,10 +126,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 	otel.SetTextMapPropagator(prop)
 
-	if err = initializeDaprClient(ctx, logger); err != nil {
+	daprClient, err := initializeDaprClient(ctx, newDefaultDaprClient, daprClientRetryDelay, logger)
+	if err != nil {
 		return fmt.Errorf("initialize dapr client: %w", err)
 	}
-	defer DaprClient.Close()
+	defer daprClient.Close()
 
 	instructions := buildInstructions()
 	logger.Debug("Server instructions configured", "instructions", instructions)
@@ -149,9 +140,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		HasTools:     true,
 	})
 
-	healthChecker := health.NewHandler(DaprClient, Version, logger)
+	healthChecker := health.NewHandler(daprClient, Version, logger)
 
-	if err = registerTools(ctx, server, toolMetrics, logger); err != nil {
+	if err = registerTools(ctx, server, daprClient, toolMetrics, logger); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 	healthChecker.SetStartupDone(true)
@@ -172,16 +163,24 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	return serveHTTP(ctx, *httpAddr, handler, healthChecker, logger)
 }
 
-func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
+// daprClientFactory creates a Dapr client. It is a parameter so tests can avoid a real sidecar.
+type daprClientFactory func() (dapr.Client, error)
+
+func newDefaultDaprClient() (dapr.Client, error) {
+	return dapr.NewClient()
+}
+
+// initializeDaprClient calls newClient until it succeeds,
+// waiting retryDelay between up to daprClientMaxAttempts attempts.
+func initializeDaprClient(ctx context.Context, newClient daprClientFactory, retryDelay time.Duration, logger *slog.Logger) (dapr.Client, error) {
 	for attempt := 1; ; attempt++ {
-		client, err := dapr.NewClient()
+		client, err := newClient()
 		if err == nil {
-			DaprClient = client
 			logger.Info("Dapr client established successfully")
-			return nil
+			return client, nil
 		}
 		if attempt == daprClientMaxAttempts {
-			return fmt.Errorf("failed to create Dapr client after %d attempts: %w", attempt, err)
+			return nil, fmt.Errorf("failed to create Dapr client after %d attempts: %w", attempt, err)
 		}
 		logger.Warn("Dapr client initialization failed",
 			"attempt", attempt,
@@ -191,8 +190,8 @@ func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting to retry Dapr client: %w", ctx.Err())
-		case <-time.After(daprClientRetryDelay):
+			return nil, fmt.Errorf("waiting to retry Dapr client: %w", ctx.Err())
+		case <-time.After(retryDelay):
 		}
 	}
 }
@@ -208,63 +207,6 @@ func buildInstructions() string {
 	b.WriteString("### Tool Call Validity\n")
 	b.WriteString("Consult the tool's Description for specific component rules (e.g., key formatting, security warnings).\n")
 	return b.String()
-}
-
-// registerTools registers the core tools and then the tools for each
-// building block that has at least one component loaded in the sidecar.
-func registerTools(ctx context.Context, server *mcp.Server, toolMetrics *telemetry.ToolMetrics, logger *slog.Logger) error {
-	metadata.RegisterTools(server, DaprClient, toolMetrics)
-	invoke.RegisterTools(server, DaprClient, toolMetrics)
-	actor.RegisterTools(server, DaprClient, toolMetrics)
-
-	components, err := metadata.GetLiveComponentList(ctx, DaprClient)
-	if err != nil {
-		return fmt.Errorf("get components: %w", err)
-	}
-
-	present := make(map[string]bool)
-	for _, c := range components {
-		switch {
-		case strings.HasPrefix(c.Type, "state."):
-			present["state"] = true
-		case strings.HasPrefix(c.Type, "pubsub."):
-			present["pubsub"] = true
-		case strings.HasPrefix(c.Type, "bindings."):
-			present["bindings"] = true
-		case strings.HasPrefix(c.Type, "secretstores."):
-			present["secrets"] = true
-		case strings.HasPrefix(c.Type, "lock."):
-			present["lock"] = true
-		case strings.HasPrefix(c.Type, "conversation."):
-			present["conversation"] = true
-		case strings.HasPrefix(c.Type, "crypto."):
-			present["crypto"] = true
-		}
-	}
-	logger.Info("Discovered Dapr components", "components", present)
-
-	if present["pubsub"] {
-		pubsub.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["bindings"] {
-		binding.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["state"] {
-		state.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["secrets"] {
-		secret.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["conversation"] {
-		conversation.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["crypto"] {
-		crypto.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["lock"] {
-		lock.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	return nil
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
