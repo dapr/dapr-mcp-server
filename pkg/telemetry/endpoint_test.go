@@ -300,6 +300,16 @@ func TestParseHeaders(t *testing.T) {
 			input:    "key1=value1,invalidheader,key2=value2",
 			expected: map[string]string{"key1": "value1", "key2": "value2"},
 		},
+		{
+			name:     "percent-encoded value is decoded",
+			input:    "Authorization=Bearer%20abc,x-list=a%2Cb",
+			expected: map[string]string{"Authorization": "Bearer abc", "x-list": "a,b"},
+		},
+		{
+			name:     "undecodable value is skipped",
+			input:    "bad=%zz,good=ok",
+			expected: map[string]string{"good": "ok"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -163,15 +163,23 @@ func parseBoolEnv(name, raw string, def bool, logger *slog.Logger) bool {
 }
 
 // parseHeaders parses the OTEL_EXPORTER_OTLP_HEADERS format: comma-separated key=value pairs.
+// Values are percent-decoded as the OTLP exporter specification requires,
+// and a pair whose value cannot be decoded is skipped.
 func parseHeaders(headersStr string) map[string]string {
 	headers := make(map[string]string)
 	if headersStr == "" {
 		return headers
 	}
 	for pair := range strings.SplitSeq(headersStr, ",") {
-		if k, v, ok := strings.Cut(pair, "="); ok {
-			headers[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
 		}
+		value, err := url.PathUnescape(strings.TrimSpace(v))
+		if err != nil {
+			continue
+		}
+		headers[strings.TrimSpace(k)] = value
 	}
 	return headers
 }
