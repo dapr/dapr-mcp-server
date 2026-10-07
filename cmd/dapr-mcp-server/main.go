@@ -44,12 +44,18 @@ var (
 	Version = "dev"
 
 	httpAddr        = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	showVersion     = flag.Bool("version", false, "print the version and exit")
 	healthCheck     = flag.Bool("health-check", false, "run a health check against the running server and exit")
 	healthCheckAddr = flag.String("health-check-addr", "", "host:port probed by --health-check (default: derived from --http, else "+defaultHealthCheckAddr+")")
 )
 
 func main() {
 	flag.Parse()
+
+	if *showVersion {
+		printVersion(os.Stdout)
+		return
+	}
 
 	if *healthCheck {
 		os.Exit(healthCheckMain(os.Stderr))
@@ -65,6 +71,10 @@ func main() {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func printVersion(w io.Writer) {
+	_, _ = fmt.Fprintln(w, Version)
 }
 
 // newLogger builds the JSON logger that writes to w.

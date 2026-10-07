@@ -19,6 +19,15 @@ func TestNewLoggerWritesJSONToGivenWriter(t *testing.T) {
 	}
 }
 
+func TestPrintVersion(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	printVersion(&buf)
+	if got, want := buf.String(), Version+"\n"; got != want {
+		t.Errorf("printVersion wrote %q, want %q", got, want)
+	}
+}
+
 func TestNewLoggerHonoursLevelEnv(t *testing.T) {
 	t.Setenv(logLevelEnv, "error")
 
