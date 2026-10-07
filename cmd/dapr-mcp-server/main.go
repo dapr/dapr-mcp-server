@@ -71,6 +71,17 @@ func main() {
 	}
 }
 
+// runStdio serves MCP over t until ctx is canceled or the client disconnects.
+// The transport is not wrapped in a logging transport,
+// because that would copy every request and response, secrets included, to stderr.
+// Cancellation is the normal signal shutdown, so it is not reported as an error.
+func runStdio(ctx context.Context, server *mcp.Server, t mcp.Transport) error {
+	if err := server.Run(ctx, t); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("stdio server: %w", err)
+	}
+	return nil
+}
+
 func printVersion(w io.Writer) {
 	_, _ = fmt.Fprintln(w, Version)
 }
@@ -139,11 +150,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	healthChecker.SetReady(true)
 
 	if *httpAddr == "" {
-		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
-		if err = server.Run(ctx, t); err != nil {
-			return fmt.Errorf("stdio server: %w", err)
-		}
-		return nil
+		return runStdio(ctx, server, &mcp.StdioTransport{})
 	}
 
 	handler, authenticators, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)

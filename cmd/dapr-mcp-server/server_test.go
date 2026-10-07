@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -48,4 +49,27 @@ func TestServeHTTPBindError(t *testing.T) {
 	err = serveHTTP(context.Background(), ln.Addr().String(), http.NotFoundHandler(), healthChecker, discardLogger())
 
 	assert.ErrorContains(t, err, "http server:")
+}
+
+func TestRunStdioReturnsNilOnContextCancel(t *testing.T) {
+	t.Parallel()
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() { done <- runStdio(ctx, server, serverTransport) }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "test"}, nil)
+	session, err := client.Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "a signal-driven shutdown must not be reported as a failure")
+	case <-time.After(httpShutdownTimeout):
+		t.Fatal("runStdio did not return after the context was canceled")
+	}
 }
