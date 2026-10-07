@@ -32,11 +32,22 @@ Then connect any MCP client to `http://localhost:8080/`. For the complete walk-t
 | --- | --- |
 | Container | `docker pull ghcr.io/dapr/dapr-mcp-server:latest` |
 | Binary | Download from [Releases](https://github.com/dapr/dapr-mcp-server/releases) and place on `PATH` |
-| From source (Go 1.25+) | `go install github.com/dapr/dapr-mcp-server/cmd/dapr-mcp-server@latest` |
+| From source (Go 1.26.6+) | `go install github.com/dapr/dapr-mcp-server/cmd/dapr-mcp-server@latest` |
 
 ## Configuration
 
-The [getting started guide](https://docs.dapr.io/developing-ai/mcp/mcp-server-getting-started/) has the full environment variable reference. Settings specific to the HTTP transport:
+The [getting started guide](https://docs.dapr.io/developing-ai/mcp/mcp-server-getting-started/) has the full environment variable reference.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--http <addr>` | unset (stdio) | Serve streamable HTTP on this address instead of stdin/stdout. Health probes are served on `/livez`, `/readyz` and `/startupz`. |
+| `--health-check` | `false` | Probe `/livez` of a running server and exit 0 if it answers 200, 1 otherwise. Used by the container `HEALTHCHECK`. |
+| `--health-check-addr <host:port>` | from `--http`, else `localhost:8080` | Address `--health-check` probes. A wildcard host such as `0.0.0.0` is probed as `localhost`. |
+| `--version` | `false` | Print the version and exit. |
+
+Logs are written as JSON to stderr, so they never mix with the stdio transport on stdout. `/readyz` returns 503 while the Dapr sidecar is unreachable.
+
+Settings specific to the HTTP transport:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
@@ -82,7 +93,7 @@ All tools, with links to their entries in the [tool reference](https://docs.dapr
 
 ```bash
 go build -o dapr-mcp-server ./cmd/dapr-mcp-server
-go test -race ./pkg/...
+go test -race ./...
 golangci-lint run ./...
 ```
 
