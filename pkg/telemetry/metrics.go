@@ -18,11 +18,10 @@ const (
 )
 
 const (
-	attrToolName      = "tool.name"
-	attrToolPackage   = "tool.package"
-	attrComponentType = "dapr.component.type"
-	attrOutcome       = "outcome"
-	attrErrorType     = "error.type"
+	attrToolName    = "tool.name"
+	attrToolPackage = "tool.package"
+	attrOutcome     = "outcome"
+	attrErrorType   = "error.type"
 
 	errorTypeExecution = "execution_error"
 )
@@ -88,14 +87,14 @@ func newToolMetrics(meter metric.Meter) (*ToolMetrics, error) {
 
 // ToolInvocation represents attributes for a tool invocation.
 type ToolInvocation struct {
-	ToolName      string
-	ToolPackage   string
-	ComponentType string
-	Outcome       string
+	ToolName    string
+	ToolPackage string
+	Outcome     string
 }
 
-// attrs returns the tool identity attributes, plus the component type
-// and outcome when set and includeOutcome is true.
+// attrs returns the tool identity attributes, plus the outcome when set and
+// includeOutcome is true. Every attribute value is drawn from a bounded set,
+// so values an agent controls must never be added here.
 func (inv ToolInvocation) attrs(includeOutcome bool, extra ...attribute.KeyValue) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 4+len(extra))
 	attrs = append(attrs,
@@ -103,9 +102,6 @@ func (inv ToolInvocation) attrs(includeOutcome bool, extra ...attribute.KeyValue
 		attribute.String(attrToolPackage, inv.ToolPackage),
 	)
 	attrs = append(attrs, extra...)
-	if inv.ComponentType != "" {
-		attrs = append(attrs, attribute.String(attrComponentType, inv.ComponentType))
-	}
 	if includeOutcome && inv.Outcome != "" {
 		attrs = append(attrs, attribute.String(attrOutcome, inv.Outcome))
 	}
@@ -180,7 +176,7 @@ func (m *ToolMetrics) StartTimer(ctx context.Context, toolName, toolPackage stri
 
 // Stop records the invocation, its duration and, for OutcomeError, an error.
 // Calls after the first are ignored.
-func (t *Timer) Stop(outcome string, componentType string) {
+func (t *Timer) Stop(outcome string) {
 	if t == nil || t.metrics == nil {
 		return
 	}
@@ -188,7 +184,6 @@ func (t *Timer) Stop(outcome string, componentType string) {
 		durationMs := float64(time.Since(t.start)) / float64(time.Millisecond)
 		inv := t.inv
 		inv.Outcome = outcome
-		inv.ComponentType = componentType
 
 		t.metrics.RecordInvocation(t.ctx, inv)
 		t.metrics.RecordDuration(t.ctx, inv, durationMs)

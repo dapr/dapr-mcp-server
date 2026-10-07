@@ -40,7 +40,7 @@ type handler struct {
 }
 
 func (h *handler) invokeOutputBinding(ctx context.Context, _ *mcp.CallToolRequest, args InvokeBindingArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolInvokeOutputBinding, packageName, args.BindingName,
+	ctx, call := h.inst.Start(ctx, toolInvokeOutputBinding, packageName,
 		attribute.String(toolkit.AttrComponentName, args.BindingName),
 		attribute.String(attrOperation, args.Operation),
 	)

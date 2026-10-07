@@ -77,7 +77,7 @@ func lockFields(storeName, resourceID, owner string) []toolkit.Field {
 }
 
 func (h *handler) acquireLock(ctx context.Context, _ *mcp.CallToolRequest, args AcquireLockArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolAcquireLock, packageName, args.StoreName, lockAttrs(args.StoreName, args.ResourceID, args.LockOwner)...)
+	ctx, call := h.inst.Start(ctx, toolAcquireLock, packageName, lockAttrs(args.StoreName, args.ResourceID, args.LockOwner)...)
 	defer call.End()
 
 	if res := call.Require(lockFields(args.StoreName, args.ResourceID, args.LockOwner)...); res != nil {
@@ -134,7 +134,7 @@ func unlockStatusError(resp *dapr.UnlockResponse, owner string) error {
 }
 
 func (h *handler) releaseLock(ctx context.Context, _ *mcp.CallToolRequest, args ReleaseLockArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolReleaseLock, packageName, args.StoreName, lockAttrs(args.StoreName, args.ResourceID, args.LockOwner)...)
+	ctx, call := h.inst.Start(ctx, toolReleaseLock, packageName, lockAttrs(args.StoreName, args.ResourceID, args.LockOwner)...)
 	defer call.End()
 
 	if res := call.Require(lockFields(args.StoreName, args.ResourceID, args.LockOwner)...); res != nil {

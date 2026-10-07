@@ -97,16 +97,14 @@ func TestToolMetricsRecordAttributes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		inv           ToolInvocation
-		wantComponent bool
-		wantOutcome   bool
+		name        string
+		inv         ToolInvocation
+		wantOutcome bool
 	}{
 		{
-			name:          "all fields",
-			inv:           ToolInvocation{ToolName: "save_state", ToolPackage: "state", ComponentType: "state.redis", Outcome: OutcomeSuccess},
-			wantComponent: true,
-			wantOutcome:   true,
+			name:        "all fields",
+			inv:         ToolInvocation{ToolName: "save_state", ToolPackage: "state", Outcome: OutcomeSuccess},
+			wantOutcome: true,
 		},
 		{
 			name: "optional fields empty",
@@ -129,8 +127,9 @@ func TestToolMetricsRecordAttributes(t *testing.T) {
 			assert.Equal(t, int64(1), inv[0].Value)
 			name, _ := attrValue(inv[0].Attributes, attrToolName)
 			assert.Equal(t, tt.inv.ToolName, name)
-			_, hasComponent := attrValue(inv[0].Attributes, attrComponentType)
-			assert.Equal(t, tt.wantComponent, hasComponent)
+			for _, kv := range inv[0].Attributes.ToSlice() {
+				assert.Contains(t, []string{attrToolName, attrToolPackage, attrOutcome}, string(kv.Key), "only bounded attributes belong on tool metrics")
+			}
 			_, hasOutcome := attrValue(inv[0].Attributes, attrOutcome)
 			assert.Equal(t, tt.wantOutcome, hasOutcome)
 
@@ -172,8 +171,8 @@ func TestTimerRecordsOnce(t *testing.T) {
 			assert.Equal(t, int64(1), inProgress[0].Value)
 
 			time.Sleep(2 * time.Millisecond)
-			timer.Stop(tt.outcome, "state.redis")
-			timer.Stop(tt.outcome, "state.redis")
+			timer.Stop(tt.outcome)
+			timer.Stop(tt.outcome)
 
 			inProgress = sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.in_progress"))
 			require.Len(t, inProgress, 1)
@@ -202,7 +201,7 @@ func TestTimerSurvivesCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	timer := m.StartTimer(ctx, "tool", "pkg")
 	cancel()
-	timer.Stop(OutcomeSuccess, "")
+	timer.Stop(OutcomeSuccess)
 
 	inv := sumPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.invocations"))
 	require.Len(t, inv, 1)
@@ -214,7 +213,7 @@ func TestTimerDurationHasSubMillisecondPrecision(t *testing.T) {
 
 	m, reader := newTestToolMetrics(t)
 	timer := m.StartTimer(context.Background(), "tool", "pkg")
-	timer.Stop(OutcomeSuccess, "")
+	timer.Stop(OutcomeSuccess)
 
 	dur := histogramPoints(t, collectMetric(t, reader, "dapr-mcp-server.tool.duration"))
 	require.Len(t, dur, 1)
@@ -237,10 +236,10 @@ func TestNilToolMetricsIsNoOp(t *testing.T) {
 
 		timer := m.StartTimer(ctx, "t", "p")
 		require.NotNil(t, timer)
-		timer.Stop(OutcomeError, "")
-		timer.Stop(OutcomeError, "")
+		timer.Stop(OutcomeError)
+		timer.Stop(OutcomeError)
 
 		var nilTimer *Timer
-		nilTimer.Stop(OutcomeSuccess, "")
+		nilTimer.Stop(OutcomeSuccess)
 	})
 }

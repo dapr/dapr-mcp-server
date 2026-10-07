@@ -61,7 +61,7 @@ type handler struct {
 }
 
 func (h *handler) converse(ctx context.Context, _ *mcp.CallToolRequest, args ConverseArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolConverseWithLLM, packageName, args.Name,
+	ctx, call := h.inst.Start(ctx, toolConverseWithLLM, packageName,
 		attribute.String(attrConversationName, args.Name),
 	)
 	defer call.End()

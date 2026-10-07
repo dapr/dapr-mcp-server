@@ -72,7 +72,7 @@ func (h *handler) encrypt(ctx context.Context, _ *mcp.CallToolRequest, args Encr
 	keyName := orDefault(args.KeyName, DefaultKeyName)
 	algorithm := orDefault(args.KeyWrapAlgorithm, DefaultKeyWrapAlgorithm)
 
-	ctx, call := h.inst.Start(ctx, toolEncryptData, packageName, args.ComponentName,
+	ctx, call := h.inst.Start(ctx, toolEncryptData, packageName,
 		attribute.String(toolkit.AttrComponentName, args.ComponentName),
 		attribute.String(attrKeyName, keyName),
 		attribute.String(attrAlgorithm, algorithm),
@@ -113,7 +113,7 @@ func (h *handler) encrypt(ctx context.Context, _ *mcp.CallToolRequest, args Encr
 }
 
 func (h *handler) decrypt(ctx context.Context, _ *mcp.CallToolRequest, args DecryptArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolDecryptData, packageName, args.ComponentName,
+	ctx, call := h.inst.Start(ctx, toolDecryptData, packageName,
 		attribute.String(toolkit.AttrComponentName, args.ComponentName),
 		attribute.String(attrKeyName, args.KeyName),
 	)

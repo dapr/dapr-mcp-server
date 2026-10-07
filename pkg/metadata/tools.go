@@ -120,7 +120,7 @@ type handler struct {
 }
 
 func (h *handler) getComponents(ctx context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, ComponentListWrapper, error) {
-	ctx, call := h.inst.Start(ctx, toolGetComponents, packageName, packageName)
+	ctx, call := h.inst.Start(ctx, toolGetComponents, packageName)
 	defer call.End()
 
 	if h.client == nil {

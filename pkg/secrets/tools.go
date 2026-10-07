@@ -49,7 +49,7 @@ type handler struct {
 }
 
 func (h *handler) getSecret(ctx context.Context, _ *mcp.CallToolRequest, args GetSecretArgs) (*mcp.CallToolResult, map[string]string, error) {
-	ctx, call := h.inst.Start(ctx, toolGetSecret, packageName, args.StoreName,
+	ctx, call := h.inst.Start(ctx, toolGetSecret, packageName,
 		attribute.String(toolkit.AttrComponentName, args.StoreName),
 		attribute.String(attrSecretName, args.SecretName),
 	)
@@ -83,7 +83,7 @@ func (h *handler) getSecret(ctx context.Context, _ *mcp.CallToolRequest, args Ge
 }
 
 func (h *handler) getBulkSecrets(ctx context.Context, _ *mcp.CallToolRequest, args GetBulkSecretArgs) (*mcp.CallToolResult, map[string]map[string]string, error) {
-	ctx, call := h.inst.Start(ctx, toolGetBulkSecrets, packageName, args.StoreName,
+	ctx, call := h.inst.Start(ctx, toolGetBulkSecrets, packageName,
 		attribute.String(toolkit.AttrComponentName, args.StoreName),
 	)
 	defer call.End()

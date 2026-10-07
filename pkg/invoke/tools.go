@@ -112,7 +112,7 @@ func withHeaders(ctx context.Context, headers map[string]string) context.Context
 }
 
 func (h *handler) invokeService(ctx context.Context, _ *mcp.CallToolRequest, args InvokeServiceArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolInvokeService, packageName, args.AppID,
+	ctx, call := h.inst.Start(ctx, toolInvokeService, packageName,
 		attribute.String(attrAppID, args.AppID),
 		attribute.String(attrMethod, args.Method),
 		attribute.String(attrVerb, args.HTTPVerb),

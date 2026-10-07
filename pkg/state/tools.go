@@ -79,7 +79,7 @@ func keyAttrs(storeName, key string) []attribute.KeyValue {
 }
 
 func (h *handler) saveState(ctx context.Context, _ *mcp.CallToolRequest, args SaveStateArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolSaveState, packageName, args.StoreName, keyAttrs(args.StoreName, args.Key)...)
+	ctx, call := h.inst.Start(ctx, toolSaveState, packageName, keyAttrs(args.StoreName, args.Key)...)
 	defer call.End()
 
 	if res := call.Require(
@@ -100,7 +100,7 @@ func (h *handler) saveState(ctx context.Context, _ *mcp.CallToolRequest, args Sa
 }
 
 func (h *handler) getState(ctx context.Context, _ *mcp.CallToolRequest, args GetStateArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolGetState, packageName, args.StoreName, keyAttrs(args.StoreName, args.Key)...)
+	ctx, call := h.inst.Start(ctx, toolGetState, packageName, keyAttrs(args.StoreName, args.Key)...)
 	defer call.End()
 
 	if res := call.Require(
@@ -129,7 +129,7 @@ func (h *handler) getState(ctx context.Context, _ *mcp.CallToolRequest, args Get
 }
 
 func (h *handler) deleteState(ctx context.Context, _ *mcp.CallToolRequest, args DeleteStateArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolDeleteState, packageName, args.StoreName, keyAttrs(args.StoreName, args.Key)...)
+	ctx, call := h.inst.Start(ctx, toolDeleteState, packageName, keyAttrs(args.StoreName, args.Key)...)
 	defer call.End()
 
 	if res := call.Require(
@@ -149,7 +149,7 @@ func (h *handler) deleteState(ctx context.Context, _ *mcp.CallToolRequest, args 
 }
 
 func (h *handler) executeTransaction(ctx context.Context, _ *mcp.CallToolRequest, args ExecuteTransactionArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolExecuteTransaction, packageName, args.StoreName,
+	ctx, call := h.inst.Start(ctx, toolExecuteTransaction, packageName,
 		attribute.String(toolkit.AttrComponentName, args.StoreName),
 		attribute.Int(attrOperationsCount, len(args.Items)),
 	)

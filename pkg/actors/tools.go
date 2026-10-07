@@ -42,7 +42,7 @@ type handler struct {
 }
 
 func (h *handler) invokeActorMethod(ctx context.Context, _ *mcp.CallToolRequest, args InvokeActorMethodArgs) (*mcp.CallToolResult, any, error) {
-	ctx, call := h.inst.Start(ctx, toolInvokeActorMethod, packageName, args.ActorType,
+	ctx, call := h.inst.Start(ctx, toolInvokeActorMethod, packageName,
 		attribute.String(attrActorType, args.ActorType),
 		attribute.String(attrActorID, args.ActorID),
 		attribute.String(attrActorMethod, args.Method),

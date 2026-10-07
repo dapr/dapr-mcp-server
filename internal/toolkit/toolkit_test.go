@@ -169,7 +169,7 @@ func TestCallLifecycle(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
 			in := newTestInstrumentation(t, &buf)
-			_, call := in.Start(context.Background(), "tool", "pkg", "component")
+			_, call := in.Start(context.Background(), "tool", "pkg")
 			res := tt.run(call)
 			call.End()
 			call.End()
@@ -191,7 +191,7 @@ func TestCallLifecycle(t *testing.T) {
 
 func TestStartWithoutMetricsOrLogger(t *testing.T) {
 	t.Parallel()
-	_, call := Instrumentation{}.Start(context.Background(), "tool", "pkg", "c")
+	_, call := Instrumentation{}.Start(context.Background(), "tool", "pkg")
 	call.Succeed()
 	call.End()
 }
@@ -209,7 +209,7 @@ func TestStartPropagatesTraceContext(t *testing.T) {
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
-	ctx, call := NewInstrumentation(nil).Start(context.Background(), "tool", "pkg", "c")
+	ctx, call := NewInstrumentation(nil).Start(context.Background(), "tool", "pkg")
 	defer call.End()
 
 	md, ok := metadata.FromOutgoingContext(ctx)

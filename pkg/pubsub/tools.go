@@ -55,7 +55,7 @@ type handler struct {
 
 // publish sends one message and reports it under the given tool name.
 func (h *handler) publish(ctx context.Context, tool string, args PublishWithMetadataArgs) (*mcp.CallToolResult, bool) {
-	ctx, call := h.inst.Start(ctx, tool, packageName, args.PubsubName,
+	ctx, call := h.inst.Start(ctx, tool, packageName,
 		attribute.String(toolkit.AttrComponentName, args.PubsubName),
 		attribute.String(attrTopic, args.Topic),
 	)

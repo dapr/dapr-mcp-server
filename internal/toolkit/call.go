@@ -50,7 +50,6 @@ func NewInstrumentation(metrics *telemetry.ToolMetrics) Instrumentation {
 type Call struct {
 	ctx      context.Context
 	tool     string
-	label    string
 	span     trace.Span
 	timer    *telemetry.Timer
 	logger   *slog.Logger
@@ -58,11 +57,12 @@ type Call struct {
 }
 
 // Start begins a tool call named tool in package pkg.
-// The label is the component (or app or actor type) the call targets and is
-// recorded on the metrics.
+// Metrics carry only the tool name, package and outcome, because anything an
+// agent supplies (component, app or actor names) is unbounded as a metric label.
+// Pass such values as span attributes instead.
 // The returned context carries the span and the trace context as outgoing
 // gRPC metadata, so the Dapr sidecar joins the same trace.
-func (in Instrumentation) Start(ctx context.Context, tool, pkg, label string, attrs ...attribute.KeyValue) (context.Context, *Call) {
+func (in Instrumentation) Start(ctx context.Context, tool, pkg string, attrs ...attribute.KeyValue) (context.Context, *Call) {
 	var timer *telemetry.Timer
 	if in.Metrics != nil {
 		timer = in.Metrics.StartTimer(ctx, tool, pkg)
@@ -78,7 +78,7 @@ func (in Instrumentation) Start(ctx context.Context, tool, pkg, label string, at
 	}
 
 	ctx = withOutgoingTraceContext(ctx)
-	return ctx, &Call{ctx: ctx, tool: tool, label: label, span: span, timer: timer, logger: logger}
+	return ctx, &Call{ctx: ctx, tool: tool, span: span, timer: timer, logger: logger}
 }
 
 // withOutgoingTraceContext copies the active trace context into the outgoing
@@ -141,6 +141,6 @@ func (c *Call) stop(outcome string) {
 	}
 	c.finished = true
 	if c.timer != nil {
-		c.timer.Stop(outcome, c.label)
+		c.timer.Stop(outcome)
 	}
 }
