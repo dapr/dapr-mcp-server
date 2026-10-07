@@ -30,7 +30,6 @@ const (
 	readHeaderTimeout     = 10 * time.Second
 	httpShutdownTimeout   = 15 * time.Second
 	telemetryFlushTimeout = 10 * time.Second
-	healthCheckURL        = "http://localhost:8080/livez"
 	logLevelEnv           = "DAPR_MCP_SERVER_LOG_LEVEL"
 )
 
@@ -38,18 +37,16 @@ var (
 	// Version is set at build time via -ldflags
 	Version = "dev"
 
-	httpAddr    = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
-	healthCheck = flag.Bool("health-check", false, "run a health check against the running server and exit")
+	httpAddr        = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	healthCheck     = flag.Bool("health-check", false, "run a health check against the running server and exit")
+	healthCheckAddr = flag.String("health-check-addr", "", "host:port probed by --health-check (default: derived from --http, else "+defaultHealthCheckAddr+")")
 )
 
 func main() {
 	flag.Parse()
 
 	if *healthCheck {
-		if err := runHealthCheck(); err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
+		os.Exit(healthCheckMain(os.Stderr))
 	}
 
 	logger := newLogger(os.Stderr)
@@ -70,23 +67,6 @@ func newLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: telemetry.ParseLogLevel(os.Getenv(logLevelEnv)),
 	}))
-}
-
-// runHealthCheck probes the liveness endpoint of a locally running server.
-func runHealthCheck() error {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthCheckURL, nil)
-	if err != nil {
-		return fmt.Errorf("build health check request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // health check against localhost only
-	if err != nil {
-		return fmt.Errorf("health check request: %w", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check returned status %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // run wires up the server and blocks until ctx is canceled or the server fails.
