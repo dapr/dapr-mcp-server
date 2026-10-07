@@ -28,6 +28,8 @@ const (
 	daprClientMaxAttempts = 5
 	daprClientRetryDelay  = 2 * time.Second
 	readHeaderTimeout     = 10 * time.Second
+	httpIdleTimeout       = 120 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
 	httpShutdownTimeout   = 15 * time.Second
 	telemetryFlushTimeout = 10 * time.Second
 	logLevelEnv           = "DAPR_MCP_SERVER_LOG_LEVEL"
@@ -255,10 +257,13 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChe
 	streamsCtx, closeStreams := context.WithCancel(context.Background())
 	defer closeStreams()
 
+	// WriteTimeout stays unset: server-sent event streams are long-lived responses.
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           closeStreamsOnShutdown(streamsCtx, handler),
 		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	srv.RegisterOnShutdown(closeStreams)
 
@@ -283,6 +288,9 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChe
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
+		if closeErr := srv.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return fmt.Errorf("http shutdown: %w", err)
 	}
 	logger.Info("Server stopped gracefully")
