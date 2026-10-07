@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,10 @@ const (
 
 	// DefaultServiceName is the service.name reported when OTEL_SERVICE_NAME is unset.
 	DefaultServiceName = "dapr-mcp-server"
+
+	// DefaultServiceVersion is the service.version reported when neither
+	// OTEL_SERVICE_VERSION nor WithServiceVersion supplies one.
+	DefaultServiceVersion = "unknown"
 
 	// instrumentationName names the tracer, meter and logger this package creates.
 	instrumentationName = "dapr-mcp-server"
@@ -79,7 +84,7 @@ func DefaultConfig() Config {
 
 	serviceVersion := os.Getenv(envServiceVersion)
 	if serviceVersion == "" {
-		serviceVersion = "v1.0.0"
+		serviceVersion = DefaultServiceVersion
 	}
 
 	insecure := false
@@ -201,12 +206,7 @@ func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkre
 		return fmt.Errorf("create metric exporter: %w", err)
 	}
 
-	flushInterval := defaultMetricExportInterval
-	if intervalStr := os.Getenv(envMetricExportPeriod); intervalStr != "" {
-		if parsed, err := time.ParseDuration(intervalStr); err == nil {
-			flushInterval = parsed
-		}
-	}
+	flushInterval := parseExportInterval(envMetricExportPeriod, os.Getenv(envMetricExportPeriod), defaultMetricExportInterval, t.Logger)
 
 	t.MeterProvider = sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(resource),
@@ -244,12 +244,7 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 		return fmt.Errorf("create log exporter: %w", err)
 	}
 
-	flushInterval := defaultLogExportInterval
-	if intervalStr := os.Getenv(envLogExportPeriod); intervalStr != "" {
-		if parsed, err := time.ParseDuration(intervalStr); err == nil {
-			flushInterval = parsed
-		}
-	}
+	flushInterval := parseExportInterval(envLogExportPeriod, os.Getenv(envLogExportPeriod), defaultLogExportInterval, t.Logger)
 
 	t.LoggerProvider = sdklog.NewLoggerProvider(
 		sdklog.WithResource(resource),
@@ -304,10 +299,56 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 	return lastErr
 }
 
-// Initialize initializes OpenTelemetry with default configuration and returns a shutdown function.
-func Initialize(ctx context.Context) (func(context.Context) error, error) {
+// parseExportInterval reads an export interval variable.
+// Bare integers are milliseconds, as the OTEL spec defines them;
+// Go durations such as "30s" are accepted for backward compatibility.
+// Empty, invalid or non-positive values log a warning and return def.
+func parseExportInterval(name, raw string, def time.Duration, logger *slog.Logger) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	} else if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	logger.Warn("ignoring invalid export interval", "name", name, "value", raw, "default", def)
+	return def
+}
+
+// Option customizes Initialize.
+type Option func(*options)
+
+type options struct {
+	serviceVersion string
+}
+
+// WithServiceVersion sets the service.version reported when OTEL_SERVICE_VERSION is unset,
+// typically the version stamped into the binary at build time.
+func WithServiceVersion(version string) Option {
+	return func(o *options) { o.serviceVersion = version }
+}
+
+// configFromOptions returns DefaultConfig with opts applied.
+func configFromOptions(opts []Option) Config {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	cfg := DefaultConfig()
-	t, err := Init(ctx, cfg)
+	if os.Getenv(envServiceVersion) == "" && o.serviceVersion != "" {
+		cfg.ServiceVersion = o.serviceVersion
+	}
+	return cfg
+}
+
+// Initialize initializes OpenTelemetry with DefaultConfig and returns a shutdown function.
+func Initialize(ctx context.Context, opts ...Option) (func(context.Context) error, error) {
+	t, err := Init(ctx, configFromOptions(opts))
 	if err != nil {
 		return nil, err
 	}

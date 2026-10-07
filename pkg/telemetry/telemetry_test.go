@@ -46,7 +46,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
 	assert.Equal(t, "dapr-mcp-server", cfg.ServiceName)
-	assert.Equal(t, "v1.0.0", cfg.ServiceVersion)
+	assert.Equal(t, DefaultServiceVersion, cfg.ServiceVersion)
 	assert.Equal(t, ProtocolGRPC, cfg.Protocol)
 	assert.Empty(t, cfg.Endpoint)
 	assert.False(t, cfg.Insecure)
@@ -336,6 +336,61 @@ func TestInitialize(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, shutdown)
 	assert.NoError(t, shutdown(context.Background()))
+}
+
+func TestConfigFromOptionsServiceVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		envVersion string
+		opts       []Option
+		want       string
+	}{
+		{name: "default", want: DefaultServiceVersion},
+		{name: "option sets version", opts: []Option{WithServiceVersion("1.2.3")}, want: "1.2.3"},
+		{name: "env wins over option", envVersion: "env-v", opts: []Option{WithServiceVersion("1.2.3")}, want: "env-v"},
+		{name: "empty option keeps default", opts: []Option{WithServiceVersion("")}, want: DefaultServiceVersion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearOTELEnv(t)
+			t.Setenv(envServiceVersion, tt.envVersion)
+
+			assert.Equal(t, tt.want, configFromOptions(tt.opts).ServiceVersion)
+		})
+	}
+}
+
+func TestParseExportInterval(t *testing.T) {
+	t.Parallel()
+
+	const def = 7 * time.Second
+	tests := []struct {
+		name     string
+		raw      string
+		want     time.Duration
+		wantWarn bool
+	}{
+		{name: "empty uses default", raw: "", want: def},
+		{name: "integer is milliseconds", raw: "1500", want: 1500 * time.Millisecond},
+		{name: "spaces trimmed", raw: " 250 ", want: 250 * time.Millisecond},
+		{name: "go duration accepted", raw: "30s", want: 30 * time.Second},
+		{name: "zero rejected", raw: "0", want: def, wantWarn: true},
+		{name: "negative rejected", raw: "-5", want: def, wantWarn: true},
+		{name: "negative duration rejected", raw: "-1s", want: def, wantWarn: true},
+		{name: "garbage rejected", raw: "soon", want: def, wantWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			got := parseExportInterval("X", tt.raw, def, slog.New(slog.NewTextHandler(&buf, nil)))
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantWarn, buf.Len() > 0)
+		})
+	}
 }
 
 func TestParseLogLevel(t *testing.T) {
