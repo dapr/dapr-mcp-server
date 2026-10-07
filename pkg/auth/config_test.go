@@ -44,24 +44,18 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.False(t, cfg.Enabled())
 	assert.Equal(t, ModeDisabled, cfg.Mode)
-	assert.Contains(t, cfg.SkipPaths, "/livez")
-	assert.Contains(t, cfg.SkipPaths, "/readyz")
-	assert.Contains(t, cfg.SkipPaths, "/startupz")
 }
 
 func TestDefaultConfigWithEnvVars(t *testing.T) {
 	clearAuthEnvVars()
 
 	os.Setenv("AUTH_MODE", "oidc")
-	os.Setenv("AUTH_SKIP_PATHS", "/health,/metrics")
 	defer clearAuthEnvVars()
 
 	cfg := DefaultConfig()
 
 	assert.True(t, cfg.Enabled())
 	assert.Equal(t, ModeOIDC, cfg.Mode)
-	assert.Contains(t, cfg.SkipPaths, "/health")
-	assert.Contains(t, cfg.SkipPaths, "/metrics")
 }
 
 func TestDefaultConfigAutoEnablesAuthMethod(t *testing.T) {
@@ -554,19 +548,6 @@ func TestDaprSentryConfigValidate(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestDefaultConfigSkipPathsSpaceTrimming(t *testing.T) {
-	clearAuthEnvVars()
-
-	os.Setenv("AUTH_SKIP_PATHS", " /path1 , /path2 , /path3 ")
-	defer clearAuthEnvVars()
-
-	cfg := DefaultConfig()
-
-	assert.Contains(t, cfg.SkipPaths, "/path1")
-	assert.Contains(t, cfg.SkipPaths, "/path2")
-	assert.Contains(t, cfg.SkipPaths, "/path3")
 }
 
 func TestHybridModeWithMultipleMethodsEnabled(t *testing.T) {

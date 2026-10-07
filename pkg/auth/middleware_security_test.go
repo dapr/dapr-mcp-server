@@ -99,32 +99,6 @@ func TestExtractTokenCustomHeader(t *testing.T) {
 	}
 }
 
-func TestShouldSkipRejectsUncleanPaths(t *testing.T) {
-	t.Parallel()
-	m := &Middleware{config: Config{SkipPaths: []string{"/livez", "/api/*"}}}
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{path: "/livez", want: true},
-		{path: "/api/users", want: true},
-		{path: "/api/users/", want: true},
-		{path: "", want: false},
-		{path: "//livez", want: false},
-		{path: "/livez/", want: false},
-		{path: "/livez/../mcp", want: false},
-		{path: "/api/../mcp", want: false},
-		{path: "/api//users", want: false},
-		{path: "/api/./users", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, m.shouldSkip(tt.path))
-		})
-	}
-}
-
 func TestMiddlewareNotBypassedThroughServeMux(t *testing.T) {
 	t.Parallel()
 	const validToken = "good-token"
@@ -138,8 +112,7 @@ func TestMiddlewareNotBypassedThroughServeMux(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	cfg := Config{Mode: ModeOIDC, SkipPaths: []string{"/livez", "/livez/*"}}
-	require.NoError(t, validateSkipPaths(cfg.SkipPaths))
+	cfg := Config{Mode: ModeOIDC}
 	handler := NewMiddleware(cfg, []Authenticator{stubAuthenticator{valid: validToken}}, nil).Handler(mux)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -159,7 +132,11 @@ func TestMiddlewareNotBypassedThroughServeMux(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	assert.Equal(t, http.StatusOK, get(t, "/livez", ""))
+	for _, p := range []string{"/livez", "/", "/mcp"} {
+		t.Run("no token "+p, func(t *testing.T) {
+			assert.Equal(t, http.StatusUnauthorized, get(t, p, ""))
+		})
+	}
 	for _, p := range []string{"/livez/../mcp", "//livez/../mcp", "/livez/./../mcp", "//mcp"} {
 		t.Run(p, func(t *testing.T) {
 			assert.Equal(t, http.StatusUnauthorized, get(t, p, ""))

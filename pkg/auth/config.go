@@ -15,7 +15,7 @@ import (
 const (
 	envAuthEnabled           = "AUTH_ENABLED" // removed; still read to reject it
 	envAuthMode              = "AUTH_MODE"
-	envAuthSkipPaths         = "AUTH_SKIP_PATHS"
+	envAuthSkipPaths         = "AUTH_SKIP_PATHS" // removed; still read to reject it
 	envOIDCEnabled           = "OIDC_ENABLED"
 	envOIDCIssuerURL         = "OIDC_ISSUER_URL"
 	envOIDCClientID          = "OIDC_CLIENT_ID"
@@ -43,12 +43,10 @@ const (
 	MinJWKSRefreshInterval = 30 * time.Second
 
 	authorizationHeader = "Authorization"
-	skipPathWildcard    = "*"
 	listSeparator       = ","
 )
 
 var (
-	defaultSkipPaths         = []string{"/livez", "/readyz", "/startupz"}
 	defaultOIDCAlgorithms    = []string{"RS256", "ES256"}
 	defaultSentryTokenHeader = authorizationHeader
 )
@@ -57,8 +55,8 @@ var (
 var (
 	// ErrAuthEnabledRemoved is returned when the removed AUTH_ENABLED variable is set.
 	ErrAuthEnabledRemoved = errors.New("AUTH_ENABLED is no longer supported; AUTH_MODE alone turns authentication on (unset or \"disabled\" turns it off)")
-	// ErrInvalidSkipPath is returned when an AUTH_SKIP_PATHS entry is unsafe or malformed.
-	ErrInvalidSkipPath = errors.New("invalid AUTH_SKIP_PATHS entry")
+	// ErrAuthSkipPathsRemoved is returned when the removed AUTH_SKIP_PATHS variable is set.
+	ErrAuthSkipPathsRemoved = errors.New("AUTH_SKIP_PATHS is no longer supported; health endpoints never require authentication and every other path, including the MCP endpoint, always does")
 	// ErrOIDCIssuerURLRequired is returned when OIDC is enabled without OIDC_ISSUER_URL.
 	ErrOIDCIssuerURLRequired = errors.New("OIDC_ISSUER_URL is required")
 	// ErrOIDCClientIDRequired is returned when OIDC is enabled without OIDC_CLIENT_ID.
@@ -85,9 +83,6 @@ type Config struct {
 	// fails Validate unless it names a supported mode.
 	// DefaultConfig maps an unset AUTH_MODE to ModeDisabled.
 	Mode AuthMode
-	// SkipPaths are paths that don't require authentication.
-	// Entries must start with "/"; a trailing "*" matches any path with that prefix.
-	SkipPaths []string
 
 	// OIDC configuration
 	OIDC OIDCConfig
@@ -168,9 +163,9 @@ func DefaultConfig() Config {
 		mode = ModeDisabled
 	}
 
-	skipPaths := slices.Clone(defaultSkipPaths)
-	if raw, ok := os.LookupEnv(envAuthSkipPaths); ok && raw != "" {
-		skipPaths = splitList(raw)
+	var skipPathsErr error
+	if os.Getenv(envAuthSkipPaths) != "" {
+		skipPathsErr = ErrAuthSkipPathsRemoved
 	}
 
 	oidcConfig, oidcErr := defaultOIDCConfig()
@@ -190,11 +185,10 @@ func DefaultConfig() Config {
 
 	return Config{
 		Mode:       mode,
-		SkipPaths:  skipPaths,
 		OIDC:       oidcConfig,
 		SPIFFE:     spiffeConfig,
 		DaprSentry: daprSentryConfig,
-		envErr:     errors.Join(removedErr, oidcErr, spiffeErr, sentryErr),
+		envErr:     errors.Join(removedErr, skipPathsErr, oidcErr, spiffeErr, sentryErr),
 	}
 }
 
@@ -291,14 +285,11 @@ func splitList(raw string) []string {
 	return out
 }
 
-// Validate reports environment parse errors, unsafe skip paths,
+// Validate reports environment parse errors
 // and missing settings for the selected authentication mode.
 func (c *Config) Validate() error {
 	if c.envErr != nil {
 		return fmt.Errorf("invalid authentication environment: %w", c.envErr)
-	}
-	if err := validateSkipPaths(c.SkipPaths); err != nil {
-		return err
 	}
 
 	if !c.Enabled() {
@@ -329,20 +320,6 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("%w: unknown AUTH_MODE %q", ErrUnsupportedMethod, c.Mode)
 	}
-}
-
-// validateSkipPaths rejects entries that would skip authentication for every path,
-// or that could never match a request path.
-func validateSkipPaths(paths []string) error {
-	for _, p := range paths {
-		switch {
-		case p == skipPathWildcard, p == "/"+skipPathWildcard:
-			return fmt.Errorf("%w %q: a catch-all wildcard would disable authentication", ErrInvalidSkipPath, p)
-		case !strings.HasPrefix(p, "/"):
-			return fmt.Errorf("%w %q: must start with \"/\"", ErrInvalidSkipPath, p)
-		}
-	}
-	return nil
 }
 
 // Validate reports missing settings when OIDC is enabled.

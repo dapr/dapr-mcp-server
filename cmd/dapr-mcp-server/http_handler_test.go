@@ -169,3 +169,14 @@ func testJWKS(t *testing.T) []byte {
 	require.NoError(t, err)
 	return body
 }
+
+func TestBuildHTTPHandlerRejectsRemovedSkipPaths(t *testing.T) {
+	clearAuthEnv(t)
+	enableSentryAuth(t, newJWKSServer(t, http.StatusOK).URL)
+	t.Setenv("AUTH_SKIP_PATHS", "/")
+
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+
+	require.ErrorIs(t, err, auth.ErrAuthSkipPathsRemoved)
+	assert.Nil(t, handler)
+}

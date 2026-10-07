@@ -103,8 +103,7 @@ func TestMiddlewareWithCustomHeader(t *testing.T) {
 
 	// Configure auth
 	cfg := auth.Config{
-		Mode:      auth.ModeDaprSentry,
-		SkipPaths: []string{"/livez", "/readyz"},
+		Mode: auth.ModeDaprSentry,
 		DaprSentry: auth.DaprSentryConfig{
 			Enabled:         true,
 			JWKSUrl:         jwksServer.URL + "/jwks.json",

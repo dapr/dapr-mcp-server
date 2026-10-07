@@ -259,10 +259,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 			return nil, nil, fmt.Errorf("initialize authenticators: %w", err)
 		}
 		authMiddleware = auth.NewMiddleware(authConfig, authenticators, logger).Handler
-		logger.Info("Authentication enabled",
-			"mode", authConfig.Mode,
-			"skip_paths", authConfig.SkipPaths,
-		)
+		logger.Info("Authentication enabled", "mode", authConfig.Mode)
 	} else {
 		logger.Info("Authentication disabled")
 	}

@@ -121,23 +121,18 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 			wantEnabled: true,
 		},
 		{
-			name:    "skip paths catch-all",
-			env:     map[string]string{envAuthSkipPaths: "/livez,*"},
-			wantErr: ErrInvalidSkipPath,
+			name:    "skip paths set",
+			env:     map[string]string{envAuthSkipPaths: "/mcp"},
+			wantErr: ErrAuthSkipPathsRemoved,
 		},
 		{
-			name:    "skip paths root wildcard",
-			env:     map[string]string{envAuthSkipPaths: "/*"},
-			wantErr: ErrInvalidSkipPath,
+			name:    "skip paths removed even with auth disabled",
+			env:     map[string]string{envAuthMode: "disabled", envAuthSkipPaths: "/livez"},
+			wantErr: ErrAuthSkipPathsRemoved,
 		},
 		{
-			name:    "skip path without leading slash",
-			env:     map[string]string{envAuthSkipPaths: "livez"},
-			wantErr: ErrInvalidSkipPath,
-		},
-		{
-			name: "skip paths with trailing commas",
-			env:  map[string]string{envAuthSkipPaths: "/livez,, ,/readyz,"},
+			name: "skip paths empty is ignored",
+			env:  map[string]string{envAuthSkipPaths: ""},
 		},
 	}
 
@@ -165,24 +160,6 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestDefaultConfigSkipPathsDropsEmptyEntries(t *testing.T) {
-	clearAuthEnvVars()
-	t.Setenv(envAuthSkipPaths, " /livez ,, ,/readyz,")
-
-	cfg := DefaultConfig()
-
-	assert.Equal(t, []string{"/livez", "/readyz"}, cfg.SkipPaths)
-}
-
-func TestDefaultConfigSkipPathsIsACopy(t *testing.T) {
-	clearAuthEnvVars()
-
-	cfg := DefaultConfig()
-	cfg.SkipPaths[0] = "/mutated"
-
-	assert.Equal(t, "/livez", DefaultConfig().SkipPaths[0])
 }
 
 func TestDefaultDaprSentryConfigReadsIssuer(t *testing.T) {

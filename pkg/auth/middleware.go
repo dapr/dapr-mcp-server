@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"path"
 	"strings"
 )
 
@@ -47,17 +46,11 @@ func NewMiddleware(cfg Config, authenticators []Authenticator, logger *slog.Logg
 
 // Handler returns an HTTP middleware that authenticates requests.
 //
-// Skip paths are matched against r.URL.Path exactly as received.
-// Paths that are not in clean form (for example "//livez" or "/livez/../mcp") never match a skip path,
-// so they are authenticated; http.ServeMux then redirects them to their clean form.
+// Every request it wraps is authenticated, with no path exemptions.
+// Health endpoints are registered outside this middleware instead.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.logRequest(r)
-
-		if m.shouldSkip(r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
-		}
 
 		if !m.config.Enabled() {
 			next.ServeHTTP(w, r)
@@ -133,33 +126,6 @@ func (m *Middleware) isSensitiveHeader(name string) bool {
 	}
 	custom := m.config.DaprSentry.TokenHeader
 	return custom != "" && strings.EqualFold(name, custom)
-}
-
-// shouldSkip returns true if the path should skip authentication.
-// A skip path ending in "*" matches any path with that prefix.
-func (m *Middleware) shouldSkip(p string) bool {
-	if !isCleanPath(p) {
-		return false
-	}
-	for _, skipPath := range m.config.SkipPaths {
-		if p == skipPath {
-			return true
-		}
-		if prefix, ok := strings.CutSuffix(skipPath, skipPathWildcard); ok && strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// isCleanPath reports whether p is already in the form path.Clean produces,
-// allowing a single trailing slash.
-func isCleanPath(p string) bool {
-	if p == "" {
-		return false
-	}
-	c := path.Clean(p)
-	return p == c || (c != "/" && p == c+"/")
 }
 
 // extractTokenWithSource extracts the token and returns which header it came from.

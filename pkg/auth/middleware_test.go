@@ -61,42 +61,6 @@ func TestNewMiddlewareWithNilLogger(t *testing.T) {
 	assert.NotNil(t, middleware.logger)
 }
 
-func TestMiddlewareHandler_SkipPaths(t *testing.T) {
-	cfg := Config{
-		Mode:      ModeOIDC,
-		SkipPaths: []string{"/livez", "/readyz", "/api/*"},
-	}
-
-	middleware := NewMiddleware(cfg, nil, nil)
-
-	tests := []struct {
-		name     string
-		path     string
-		expected int
-	}{
-		{"exact match /livez", "/livez", http.StatusOK},
-		{"exact match /readyz", "/readyz", http.StatusOK},
-		{"wildcard match /api/users", "/api/users", http.StatusOK},
-		{"wildcard match /api/", "/api/", http.StatusOK},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			})
-
-			handler := middleware.Handler(nextHandler)
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			rec := httptest.NewRecorder()
-
-			handler.ServeHTTP(rec, req)
-
-			assert.Equal(t, tt.expected, rec.Code)
-		})
-	}
-}
-
 func TestMiddlewareHandler_AuthDisabled(t *testing.T) {
 	cfg := Config{
 		Mode: ModeDisabled,
@@ -331,36 +295,6 @@ func TestMiddlewareHandler_AllAuthenticatorsFail(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-}
-
-func TestShouldSkip(t *testing.T) {
-	middleware := &Middleware{
-		config: Config{
-			SkipPaths: []string{"/livez", "/readyz", "/api/*", "/exact"},
-		},
-	}
-
-	tests := []struct {
-		path     string
-		expected bool
-	}{
-		{"/livez", true},
-		{"/readyz", true},
-		{"/api/users", true},
-		{"/api/", true},
-		{"/api", false},
-		{"/exact", true},
-		{"/exactmore", false},
-		{"/protected", false},
-		{"/other", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			result := middleware.shouldSkip(tt.path)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }
 
 func TestExtractTokenWithSource(t *testing.T) {
