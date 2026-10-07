@@ -16,9 +16,33 @@ import (
 type Status string
 
 const (
-	StatusHealthy   Status = "healthy"
+	// StatusHealthy means the component is working and can serve traffic.
+	StatusHealthy Status = "healthy"
+	// StatusUnhealthy means the component is not working and the server should not receive traffic.
 	StatusUnhealthy Status = "unhealthy"
-	StatusDegraded  Status = "degraded"
+	// StatusDegraded means the component works with reduced functionality.
+	StatusDegraded Status = "degraded"
+)
+
+// Paths the probe handlers are served on by RegisterHandlers.
+const (
+	LivenessPath  = "/livez"
+	ReadinessPath = "/readyz"
+	StartupPath   = "/startupz"
+)
+
+const (
+	daprCheckTimeout = 5 * time.Second
+
+	componentDapr   = "dapr"
+	componentServer = "server"
+
+	msgServerNotReady      = "server not ready"
+	msgDaprNotInitialized  = "dapr client not initialized"
+	msgDaprUnreachable     = "dapr sidecar unreachable"
+	msgDaprSidecarHealthy  = "sidecar connected"
+	contentTypeHeader      = "Content-Type"
+	contentTypeApplication = "application/json"
 )
 
 // CheckResult represents the result of a health check.
@@ -45,26 +69,18 @@ type Handler struct {
 	startupDone atomic.Bool
 }
 
-// NewHandler creates a new health handler.
-func NewHandler(daprClient dapr.Client, version string) *Handler {
-	h := &Handler{
-		daprClient: daprClient,
-		version:    version,
+// NewHandler creates a health handler that reports neither started nor ready.
+// Call SetStartupDone and SetReady once initialization has finished.
+// A nil logger falls back to slog.Default.
+func NewHandler(daprClient dapr.Client, version string, logger *slog.Logger) *Handler {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	h.ready.Store(true)
-	h.startupDone.Store(true)
-	return h
-}
-
-// NewChecker creates a new health checker with logging support.
-func NewChecker(daprClient dapr.Client, logger *slog.Logger) *Handler {
-	h := &Handler{
+	return &Handler{
 		daprClient: daprClient,
 		logger:     logger,
+		version:    version,
 	}
-	h.ready.Store(true)
-	h.startupDone.Store(true)
-	return h
 }
 
 // SetReady sets the readiness state.
@@ -79,60 +95,52 @@ func (h *Handler) SetStartupDone(done bool) {
 
 // LivenessHandler handles /livez requests.
 // Liveness probes should be simple - just check if the server is running.
-func (h *Handler) LivenessHandler(w http.ResponseWriter, r *http.Request) {
-	resp := HealthResponse{
+func (h *Handler) LivenessHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:  StatusHealthy,
 		Version: h.version,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // ReadinessHandler handles /readyz requests.
-// Readiness probes check if the service can accept traffic.
+// The server is ready only when it is marked ready and the Dapr sidecar answers,
+// since no tool can work without the sidecar.
 func (h *Handler) ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 	checks := make([]CheckResult, 0)
 	overallStatus := StatusHealthy
-	httpStatus := http.StatusOK
 
-	// Check if marked as ready
 	if !h.ready.Load() {
 		overallStatus = StatusUnhealthy
-		httpStatus = http.StatusServiceUnavailable
 		checks = append(checks, CheckResult{
 			Status:    StatusUnhealthy,
-			Component: "server",
-			Message:   "server not ready",
+			Component: componentServer,
+			Message:   msgServerNotReady,
 		})
 	}
 
-	// Check Dapr sidecar connectivity
 	if h.daprClient != nil {
 		daprCheck := h.checkDapr(r.Context())
 		checks = append(checks, daprCheck)
 		if daprCheck.Status != StatusHealthy {
-			if overallStatus == StatusHealthy {
-				overallStatus = StatusDegraded
-			}
+			overallStatus = StatusUnhealthy
 		}
 	}
 
-	resp := HealthResponse{
+	httpStatus := http.StatusOK
+	if overallStatus != StatusHealthy {
+		httpStatus = http.StatusServiceUnavailable
+	}
+
+	writeJSON(w, httpStatus, HealthResponse{
 		Status:  overallStatus,
 		Checks:  checks,
 		Version: h.version,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(httpStatus)
-	_ = json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // StartupHandler handles /startupz requests.
 // Startup probes check if the application has finished initialization.
-func (h *Handler) StartupHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) StartupHandler(w http.ResponseWriter, _ *http.Request) {
 	status := StatusHealthy
 	httpStatus := http.StatusOK
 
@@ -141,53 +149,65 @@ func (h *Handler) StartupHandler(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
-	resp := HealthResponse{
+	writeJSON(w, httpStatus, HealthResponse{
 		Status:  status,
 		Version: h.version,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(httpStatus)
-	_ = json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // checkDapr checks the Dapr sidecar connectivity.
+// The underlying error is logged rather than returned,
+// because probe responses are served without authentication.
 func (h *Handler) checkDapr(ctx context.Context) CheckResult {
 	if h.daprClient == nil {
 		return CheckResult{
 			Status:    StatusUnhealthy,
-			Component: "dapr",
-			Message:   "dapr client not initialized",
+			Component: componentDapr,
+			Message:   msgDaprNotInitialized,
 		}
 	}
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, daprCheckTimeout)
 	defer cancel()
 
 	_, err := h.daprClient.GetMetadata(ctx)
 	latency := time.Since(start)
 
 	if err != nil {
+		h.log().Warn("Dapr sidecar health check failed", "error", err, "latency", latency)
 		return CheckResult{
 			Status:    StatusUnhealthy,
-			Component: "dapr",
-			Message:   err.Error(),
+			Component: componentDapr,
+			Message:   msgDaprUnreachable,
 			Latency:   latency.String(),
 		}
 	}
 
 	return CheckResult{
 		Status:    StatusHealthy,
-		Component: "dapr",
-		Message:   "sidecar connected",
+		Component: componentDapr,
+		Message:   msgDaprSidecarHealthy,
 		Latency:   latency.String(),
 	}
 }
 
-// RegisterHandlers registers health check handlers with the given mux.
+// RegisterHandlers registers the liveness, readiness and startup handlers with the given mux.
 func (h *Handler) RegisterHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("/livez", h.LivenessHandler)
-	mux.HandleFunc("/readyz", h.ReadinessHandler)
-	mux.HandleFunc("/startupz", h.StartupHandler)
+	mux.HandleFunc(LivenessPath, h.LivenessHandler)
+	mux.HandleFunc(ReadinessPath, h.ReadinessHandler)
+	mux.HandleFunc(StartupPath, h.StartupHandler)
+}
+
+func (h *Handler) log() *slog.Logger {
+	if h.logger == nil {
+		return slog.Default()
+	}
+	return h.logger
+}
+
+func writeJSON(w http.ResponseWriter, status int, resp HealthResponse) {
+	w.Header().Set(contentTypeHeader, contentTypeApplication)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
 }

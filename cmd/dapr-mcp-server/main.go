@@ -149,9 +149,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		HasTools:     true,
 	})
 
+	healthChecker := health.NewHandler(DaprClient, Version, logger)
+
 	if err = registerTools(ctx, server, toolMetrics, logger); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+	healthChecker.SetStartupDone(true)
+	healthChecker.SetReady(true)
 
 	if *httpAddr == "" {
 		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
@@ -161,7 +165,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return nil
 	}
 
-	healthChecker := health.NewHandler(DaprClient, Version)
 	handler, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
 	if err != nil {
 		return err
@@ -309,9 +312,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	mux := http.NewServeMux()
 
 	// Health endpoints sit outside the auth middleware.
-	mux.HandleFunc("/livez", healthChecker.LivenessHandler)
-	mux.HandleFunc("/readyz", healthChecker.ReadinessHandler)
-	mux.HandleFunc("/startupz", healthChecker.StartupHandler)
+	healthChecker.RegisterHandlers(mux)
 
 	mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
