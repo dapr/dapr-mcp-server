@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -21,6 +22,9 @@ import (
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+// envLogLevel names the variable that sets the minimum log level.
+const envLogLevel = "DAPR_MCP_SERVER_LOG_LEVEL"
 
 // Config holds the telemetry configuration.
 type Config struct {
@@ -131,8 +135,9 @@ func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
 		attribute.String("service.version", cfg.ServiceVersion),
 	)
 
-	// Initialize logger
-	t.Logger = initLogger(cfg)
+	baseHandler := newBaseHandler(os.Stderr)
+	t.Logger = withServiceAttrs(slog.New(baseHandler), cfg)
+	slog.SetDefault(t.Logger)
 
 	if cfg.Endpoint == "" {
 		t.Logger.Info("OTEL endpoint not configured, telemetry disabled")
@@ -156,14 +161,7 @@ func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
 		if err := t.initLogs(ctx, cfg, resource); err != nil {
 			t.Logger.Warn("failed to initialize OTEL logs", "error", err)
 		} else {
-			// Wrap the logger with OTEL handler
-			logLevel := ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL"))
-			jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
-			otelHandler := NewOTELHandler(t.LoggerProvider, jsonHandler)
-			t.Logger = slog.New(otelHandler).With(
-				"service", cfg.ServiceName,
-				"version", cfg.ServiceVersion,
-			)
+			t.Logger = withServiceAttrs(slog.New(NewOTELHandler(t.LoggerProvider, baseHandler)), cfg)
 			slog.SetDefault(t.Logger)
 		}
 	}
@@ -357,17 +355,18 @@ func ParseLogLevel(name string) slog.Level {
 	}
 }
 
-// initLogger initializes the structured logger.
-func initLogger(cfg Config) *slog.Logger {
-	opts := &slog.HandlerOptions{
-		Level: ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
-	}
+// newBaseHandler returns the JSON handler every logger writes through.
+// Callers pass os.Stderr: stdout carries the MCP stdio transport,
+// so anything logged there would corrupt the protocol stream.
+func newBaseHandler(w io.Writer) slog.Handler {
+	return slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level: ParseLogLevel(os.Getenv(envLogLevel)),
+	})
+}
 
-	handler := slog.NewJSONHandler(os.Stdout, opts)
-	return slog.New(handler).With(
-		"service", cfg.ServiceName,
-		"version", cfg.ServiceVersion,
-	)
+// withServiceAttrs tags every record from logger with the service identity.
+func withServiceAttrs(logger *slog.Logger, cfg Config) *slog.Logger {
+	return logger.With("service", cfg.ServiceName, "version", cfg.ServiceVersion)
 }
 
 // Shutdown gracefully shuts down all telemetry components.

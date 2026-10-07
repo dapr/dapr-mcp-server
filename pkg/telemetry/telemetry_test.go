@@ -1,9 +1,11 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -184,31 +186,38 @@ func TestTelemetryShutdownWithError(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestInitLogger(t *testing.T) {
+func TestNewBaseHandler(t *testing.T) {
 	tests := []struct {
-		name     string
-		logLevel string
+		name       string
+		logLevel   string
+		wantDebug  bool
+		wantInfo   bool
+		wantErrors bool
 	}{
-		{"debug level", "DEBUG"},
-		{"info level", "INFO"},
-		{"warn level", "WARN"},
-		{"warning level", "WARNING"},
-		{"error level", "ERROR"},
-		{"default level", ""},
+		{name: "debug level", logLevel: "DEBUG", wantDebug: true, wantInfo: true, wantErrors: true},
+		{name: "info level", logLevel: "INFO", wantInfo: true, wantErrors: true},
+		{name: "error level", logLevel: "ERROR", wantErrors: true},
+		{name: "default level", logLevel: "", wantInfo: true, wantErrors: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("DAPR_MCP_SERVER_LOG_LEVEL", tt.logLevel)
-			defer os.Unsetenv("DAPR_MCP_SERVER_LOG_LEVEL")
+			t.Setenv(envLogLevel, tt.logLevel)
 
-			cfg := Config{
-				ServiceName:    "test",
-				ServiceVersion: "v1",
+			var buf bytes.Buffer
+			logger := withServiceAttrs(slog.New(newBaseHandler(&buf)), Config{ServiceName: "svc", ServiceVersion: "v1"})
+			logger.Debug("debug-msg")
+			logger.Info("info-msg")
+			logger.Error("error-msg")
+
+			out := buf.String()
+			assert.Equal(t, tt.wantDebug, strings.Contains(out, "debug-msg"))
+			assert.Equal(t, tt.wantInfo, strings.Contains(out, "info-msg"))
+			assert.Equal(t, tt.wantErrors, strings.Contains(out, "error-msg"))
+			if out != "" {
+				assert.Contains(t, out, `"service":"svc"`)
+				assert.Contains(t, out, `"version":"v1"`)
 			}
-
-			logger := initLogger(cfg)
-			assert.NotNil(t, logger)
 		})
 	}
 }
