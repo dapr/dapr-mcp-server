@@ -21,6 +21,16 @@ func TestDefaultConfigEnvValidation(t *testing.T) {
 			wantErr: ErrModeWithoutEnabled,
 		},
 		{
+			name:    "enabled without mode",
+			env:     map[string]string{envAuthEnabled: "true"},
+			wantErr: ErrEnabledWithoutMode,
+		},
+		{
+			name:    "enabled with mode disabled",
+			env:     map[string]string{envAuthEnabled: "true", envAuthMode: "disabled"},
+			wantErr: ErrEnabledWithoutMode,
+		},
+		{
 			name: "mode disabled without enabled",
 			env:  map[string]string{envAuthMode: "disabled"},
 		},

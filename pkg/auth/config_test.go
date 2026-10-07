@@ -255,12 +255,20 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "disabled mode is valid",
+			name: "disabled mode is valid when auth is off",
+			config: Config{
+				Enabled: false,
+				Mode:    ModeDisabled,
+			},
+			wantErr: false,
+		},
+		{
+			name: "enabled with disabled mode fails closed",
 			config: Config{
 				Enabled: true,
 				Mode:    ModeDisabled,
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "oidc mode without oidc enabled",

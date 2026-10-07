@@ -57,6 +57,8 @@ var (
 var (
 	// ErrModeWithoutEnabled is returned when AUTH_MODE selects an auth method but AUTH_ENABLED is not true.
 	ErrModeWithoutEnabled = errors.New("AUTH_MODE is set but AUTH_ENABLED is not true; set AUTH_ENABLED=true or unset AUTH_MODE")
+	// ErrEnabledWithoutMode is returned when AUTH_ENABLED is true but AUTH_MODE does not select an auth method.
+	ErrEnabledWithoutMode = errors.New("AUTH_ENABLED is true but AUTH_MODE does not select an authentication method")
 	// ErrInvalidSkipPath is returned when an AUTH_SKIP_PATHS entry is unsafe or malformed.
 	ErrInvalidSkipPath = errors.New("invalid AUTH_SKIP_PATHS entry")
 	// ErrOIDCIssuerURLRequired is returned when OIDC is enabled without OIDC_ISSUER_URL.
@@ -320,7 +322,7 @@ func (c *Config) Validate() error {
 		}
 		return errors.Join(c.OIDC.Validate(), c.SPIFFE.Validate(), c.DaprSentry.Validate())
 	case ModeDisabled:
-		return nil
+		return ErrEnabledWithoutMode
 	default:
 		return ErrUnsupportedMethod
 	}
