@@ -4,186 +4,294 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"os"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
+// otelEnvVars lists every variable Init or the exporters read, so tests can blank them.
+var otelEnvVars = []string{
+	envOTLPEndpoint, envOTLPProtocol, envOTLPInsecure, envOTLPHeaders,
+	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_TRACES_INSECURE", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_METRICS_INSECURE", "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_LOGS_INSECURE", "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+	envServiceName, envServiceVersion, envMetricsEnabled, envLogsEnabled,
+	envMetricExportPeriod, envLogExportPeriod, envLogLevel,
+}
+
+// clearOTELEnv blanks the OTEL environment and restores the default slog logger afterwards.
+func clearOTELEnv(t *testing.T) {
+	t.Helper()
+	for _, v := range otelEnvVars {
+		t.Setenv(v, "")
+	}
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+}
+
 func TestDefaultConfig(t *testing.T) {
-	// Clear environment variables
-	envVars := []string{
-		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-		"OTEL_EXPORTER_OTLP_PROTOCOL",
-		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-		"OTEL_EXPORTER_OTLP_ENDPOINT",
-		"OTEL_EXPORTER_OTLP_HEADERS",
-		"OTEL_SERVICE_NAME",
-		"OTEL_SERVICE_VERSION",
-		"DAPR_MCP_SERVER_METRICS_ENABLED",
-		"DAPR_MCP_SERVER_LOGS_OTEL_ENABLED",
-	}
-	for _, v := range envVars {
-		os.Unsetenv(v)
-	}
+	clearOTELEnv(t)
 
 	cfg := DefaultConfig()
 
 	assert.Equal(t, "dapr-mcp-server", cfg.ServiceName)
 	assert.Equal(t, "v1.0.0", cfg.ServiceVersion)
-	assert.Equal(t, "grpc", cfg.Protocol)
+	assert.Equal(t, ProtocolGRPC, cfg.Protocol)
 	assert.Empty(t, cfg.Endpoint)
+	assert.False(t, cfg.Insecure)
 	assert.True(t, cfg.MetricsEnabled)
 	assert.True(t, cfg.LogsEnabled)
 }
 
 func TestDefaultConfigWithEnvVars(t *testing.T) {
-	// Set environment variables
-	os.Setenv("OTEL_SERVICE_NAME", "test-service")
-	os.Setenv("OTEL_SERVICE_VERSION", "v2.0.0")
-	os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
-	os.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-	os.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "key1=value1,key2=value2")
-	os.Setenv("DAPR_MCP_SERVER_METRICS_ENABLED", "false")
-	os.Setenv("DAPR_MCP_SERVER_LOGS_OTEL_ENABLED", "false")
-
-	defer func() {
-		os.Unsetenv("OTEL_SERVICE_NAME")
-		os.Unsetenv("OTEL_SERVICE_VERSION")
-		os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-		os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-		os.Unsetenv("OTEL_EXPORTER_OTLP_HEADERS")
-		os.Unsetenv("DAPR_MCP_SERVER_METRICS_ENABLED")
-		os.Unsetenv("DAPR_MCP_SERVER_LOGS_OTEL_ENABLED")
-	}()
+	clearOTELEnv(t)
+	t.Setenv(envServiceName, "test-service")
+	t.Setenv(envServiceVersion, "v2.0.0")
+	t.Setenv(envOTLPEndpoint, "localhost:4317")
+	t.Setenv(envOTLPProtocol, ProtocolHTTPProtobuf)
+	t.Setenv(envOTLPHeaders, "key1=value1,key2=value2")
+	t.Setenv(envOTLPInsecure, "true")
+	t.Setenv(envMetricsEnabled, "false")
+	t.Setenv(envLogsEnabled, "false")
 
 	cfg := DefaultConfig()
 
 	assert.Equal(t, "test-service", cfg.ServiceName)
 	assert.Equal(t, "v2.0.0", cfg.ServiceVersion)
 	assert.Equal(t, "localhost:4317", cfg.Endpoint)
-	assert.Equal(t, "http/protobuf", cfg.Protocol)
-	assert.Equal(t, "value1", cfg.Headers["key1"])
-	assert.Equal(t, "value2", cfg.Headers["key2"])
+	assert.Equal(t, ProtocolHTTPProtobuf, cfg.Protocol)
+	assert.Equal(t, map[string]string{"key1": "value1", "key2": "value2"}, cfg.Headers)
+	assert.True(t, cfg.Insecure)
 	assert.False(t, cfg.MetricsEnabled)
 	assert.False(t, cfg.LogsEnabled)
 }
 
-func TestDefaultConfigTracesProtocolPriority(t *testing.T) {
-	// Traces-specific protocol should take priority
-	os.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json")
-	os.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-
-	defer func() {
-		os.Unsetenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
-		os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-	}()
+func TestDefaultConfigIgnoresSignalSpecificEnv(t *testing.T) {
+	clearOTELEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces.example.com:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ProtocolHTTPProtobuf)
+	t.Setenv(envOTLPEndpoint, "general.example.com:4317")
 
 	cfg := DefaultConfig()
 
-	assert.Equal(t, "http/json", cfg.Protocol)
-}
-
-func TestDefaultConfigTracesEndpointPriority(t *testing.T) {
-	// Traces-specific endpoint should take priority
-	os.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces.example.com:4317")
-	os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "general.example.com:4317")
-
-	defer func() {
-		os.Unsetenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-		os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	}()
-
-	cfg := DefaultConfig()
-
-	assert.Equal(t, "traces.example.com:4317", cfg.Endpoint)
-}
-
-func TestParseHeaders(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected map[string]string
-	}{
-		{
-			name:     "empty string",
-			input:    "",
-			expected: map[string]string{},
-		},
-		{
-			name:     "single header",
-			input:    "key=value",
-			expected: map[string]string{"key": "value"},
-		},
-		{
-			name:     "multiple headers",
-			input:    "key1=value1,key2=value2,key3=value3",
-			expected: map[string]string{"key1": "value1", "key2": "value2", "key3": "value3"},
-		},
-		{
-			name:     "headers with spaces",
-			input:    " key1 = value1 , key2 = value2 ",
-			expected: map[string]string{"key1": "value1", "key2": "value2"},
-		},
-		{
-			name:     "header with equals in value",
-			input:    "auth=token=abc123",
-			expected: map[string]string{"auth": "token=abc123"},
-		},
-		{
-			name:     "invalid header without equals",
-			input:    "key1=value1,invalidheader,key2=value2",
-			expected: map[string]string{"key1": "value1", "key2": "value2"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseHeaders(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
+	assert.Equal(t, "general.example.com:4317", cfg.Endpoint)
+	assert.Equal(t, ProtocolGRPC, cfg.Protocol)
 }
 
 func TestInitWithoutEndpoint(t *testing.T) {
-	cfg := Config{
-		ServiceName:    "test-service",
-		ServiceVersion: "v1.0.0",
-		Endpoint:       "", // No endpoint configured
-	}
+	clearOTELEnv(t)
 
-	telemetry, err := Init(context.Background(), cfg)
+	tel, err := Init(context.Background(), Config{ServiceName: "test-service", ServiceVersion: "v1.0.0"})
 
-	assert.NoError(t, err)
-	assert.NotNil(t, telemetry)
-	assert.NotNil(t, telemetry.Logger)
-	assert.Nil(t, telemetry.TracerProvider)
-	assert.Nil(t, telemetry.MeterProvider)
+	require.NoError(t, err)
+	require.NotNil(t, tel)
+	assert.NotNil(t, tel.Logger)
+	assert.Nil(t, tel.TracerProvider)
+	assert.Nil(t, tel.MeterProvider)
+	assert.Nil(t, tel.LoggerProvider)
+	assert.NoError(t, tel.Shutdown(context.Background()))
+}
+
+func TestInitInvalidTraceEndpoint(t *testing.T) {
+	clearOTELEnv(t)
+
+	_, err := Init(context.Background(), Config{Endpoint: "ftp://collector:4317"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "init tracer")
+}
+
+// otlpHTTPRecorder is a fake OTLP/HTTP collector that counts requests per path.
+type otlpHTTPRecorder struct {
+	mu    sync.Mutex
+	paths map[string]int
+}
+
+func newOTLPHTTPServer(t *testing.T) (*httptest.Server, *otlpHTTPRecorder) {
+	t.Helper()
+	rec := &otlpHTTPRecorder{paths: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.mu.Lock()
+		rec.paths[r.URL.Path]++
+		rec.mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, rec
+}
+
+func (r *otlpHTTPRecorder) count(path string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paths[path]
+}
+
+// emitAllSignals produces one span, one metric point and one log record.
+func emitAllSignals(t *testing.T, tel *Telemetry) {
+	t.Helper()
+	ctx := context.Background()
+
+	_, span := tel.TracerProvider.Tracer("test").Start(ctx, "op")
+	span.End()
+
+	counter, err := tel.MeterProvider.Meter("test").Int64Counter("test.counter")
+	require.NoError(t, err)
+	counter.Add(ctx, 1)
+
+	tel.Logger.Info("hello from test")
+}
+
+func TestInitExportsEverySignalOverHTTP(t *testing.T) {
+	clearOTELEnv(t)
+	srv, rec := newOTLPHTTPServer(t)
+
+	tel, err := Init(context.Background(), Config{
+		ServiceName:    "svc",
+		ServiceVersion: "v1",
+		Endpoint:       srv.URL + "/base",
+		Protocol:       ProtocolHTTPProtobuf,
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, tel.TracerProvider)
+	require.NotNil(t, tel.MeterProvider)
+	require.NotNil(t, tel.LoggerProvider)
+
+	emitAllSignals(t, tel)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, tel.Shutdown(ctx))
+
+	assert.Positive(t, rec.count("/base/v1/traces"))
+	assert.Positive(t, rec.count("/base/v1/metrics"))
+	assert.Positive(t, rec.count("/base/v1/logs"))
+}
+
+func TestInitSignalSpecificEndpointOverHTTP(t *testing.T) {
+	clearOTELEnv(t)
+	srv, rec := newOTLPHTTPServer(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", srv.URL+"/custom/traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ProtocolHTTPProtobuf)
+
+	tel, err := Init(context.Background(), Config{MetricsEnabled: true, LogsEnabled: true})
+	require.NoError(t, err)
+	require.NotNil(t, tel.TracerProvider)
+	assert.Nil(t, tel.MeterProvider, "metrics have no endpoint")
+	assert.Nil(t, tel.LoggerProvider, "logs have no endpoint")
+
+	_, span := tel.TracerProvider.Tracer("test").Start(context.Background(), "op")
+	span.End()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, tel.Shutdown(ctx))
+	assert.Positive(t, rec.count("/custom/traces"))
+}
+
+func TestInitInvalidMetricsAndLogsEndpointsOnlyWarn(t *testing.T) {
+	clearOTELEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "ftp://bad")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "ftp://bad")
+
+	tel, err := Init(context.Background(), Config{MetricsEnabled: true, LogsEnabled: true})
+	require.NoError(t, err)
+	assert.Nil(t, tel.MeterProvider)
+	assert.Nil(t, tel.LoggerProvider)
+}
+
+// grpcMethodRecorder captures the full method name of every RPC a gRPC server receives.
+type grpcMethodRecorder struct {
+	mu      sync.Mutex
+	methods map[string]int
+}
+
+func (r *grpcMethodRecorder) count(method string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.methods[method]
+}
+
+func newOTLPGRPCServer(t *testing.T) (string, *grpcMethodRecorder) {
+	t.Helper()
+	rec := &grpcMethodRecorder{methods: map[string]int{}}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	srv := grpc.NewServer(grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		method, _ := grpc.MethodFromServerStream(stream)
+		rec.mu.Lock()
+		rec.methods[method]++
+		rec.mu.Unlock()
+		return nil
+	}))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	return "http://" + lis.Addr().String(), rec
+}
+
+func TestInitExportsEverySignalOverGRPC(t *testing.T) {
+	clearOTELEnv(t)
+	endpoint, rec := newOTLPGRPCServer(t)
+
+	tel, err := Init(context.Background(), Config{
+		Endpoint:       endpoint,
+		Protocol:       ProtocolGRPC,
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+	})
+	require.NoError(t, err)
+
+	emitAllSignals(t, tel)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The fake server answers without a response message, so exports may report errors;
+	// the point is that each exporter reached it over plaintext gRPC.
+	_ = tel.Shutdown(ctx)
+
+	assert.Positive(t, rec.count("/opentelemetry.proto.collector.trace.v1.TraceService/Export"))
+	assert.Positive(t, rec.count("/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"))
+	assert.Positive(t, rec.count("/opentelemetry.proto.collector.logs.v1.LogsService/Export"))
+}
+
+func TestInitUnknownProtocolFallsBackToGRPC(t *testing.T) {
+	clearOTELEnv(t)
+	endpoint, rec := newOTLPGRPCServer(t)
+
+	tel, err := Init(context.Background(), Config{Endpoint: endpoint, Protocol: "thrift"})
+	require.NoError(t, err)
+
+	_, span := tel.TracerProvider.Tracer("test").Start(context.Background(), "op")
+	span.End()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = tel.Shutdown(ctx)
+
+	assert.Positive(t, rec.count("/opentelemetry.proto.collector.trace.v1.TraceService/Export"))
 }
 
 func TestTelemetryShutdownEmpty(t *testing.T) {
-	telemetry := &Telemetry{
-		shutdown: []func(context.Context) error{},
-	}
+	t.Parallel()
 
-	err := telemetry.Shutdown(context.Background())
-	assert.NoError(t, err)
-}
-
-func TestTelemetryShutdownWithError(t *testing.T) {
-	cfg := Config{
-		ServiceName:    "test-service",
-		ServiceVersion: "v1.0.0",
-		Endpoint:       "",
-	}
-
-	telemetry, err := Init(context.Background(), cfg)
-	assert.NoError(t, err)
-
-	// Shutdown should not error even with no providers
-	err = telemetry.Shutdown(context.Background())
-	assert.NoError(t, err)
+	tel := &Telemetry{Logger: slog.New(slog.DiscardHandler)}
+	assert.NoError(t, tel.Shutdown(context.Background()))
 }
 
 func TestNewBaseHandler(t *testing.T) {
@@ -214,125 +322,25 @@ func TestNewBaseHandler(t *testing.T) {
 			assert.Equal(t, tt.wantDebug, strings.Contains(out, "debug-msg"))
 			assert.Equal(t, tt.wantInfo, strings.Contains(out, "info-msg"))
 			assert.Equal(t, tt.wantErrors, strings.Contains(out, "error-msg"))
-			if out != "" {
-				assert.Contains(t, out, `"service":"svc"`)
-				assert.Contains(t, out, `"version":"v1"`)
-			}
+			assert.Contains(t, out, `"service":"svc"`)
+			assert.Contains(t, out, `"version":"v1"`)
 		})
 	}
-}
-
-func TestConfigStruct(t *testing.T) {
-	cfg := Config{
-		ServiceName:    "test-service",
-		ServiceVersion: "v1.0.0",
-		Endpoint:       "localhost:4317",
-		Protocol:       "grpc",
-		Headers:        map[string]string{"key": "value"},
-		MetricsEnabled: true,
-		LogsEnabled:    true,
-	}
-
-	assert.Equal(t, "test-service", cfg.ServiceName)
-	assert.Equal(t, "v1.0.0", cfg.ServiceVersion)
-	assert.Equal(t, "localhost:4317", cfg.Endpoint)
-	assert.Equal(t, "grpc", cfg.Protocol)
-	assert.Equal(t, "value", cfg.Headers["key"])
-	assert.True(t, cfg.MetricsEnabled)
-	assert.True(t, cfg.LogsEnabled)
-}
-
-func TestTelemetryStruct(t *testing.T) {
-	telemetry := &Telemetry{
-		TracerProvider: nil,
-		MeterProvider:  nil,
-		Logger:         nil,
-		shutdown:       make([]func(context.Context) error, 0),
-	}
-
-	assert.Nil(t, telemetry.TracerProvider)
-	assert.Nil(t, telemetry.MeterProvider)
-	assert.Nil(t, telemetry.Logger)
-	assert.Empty(t, telemetry.shutdown)
 }
 
 func TestInitialize(t *testing.T) {
-	// Clear environment to ensure no endpoint is configured
-	os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	os.Unsetenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	clearOTELEnv(t)
 
 	shutdown, err := Initialize(context.Background())
 
-	assert.NoError(t, err)
-	assert.NotNil(t, shutdown)
-
-	// Call shutdown to clean up
-	err = shutdown(context.Background())
-	assert.NoError(t, err)
-}
-
-func TestResolveProtocol(t *testing.T) {
-	tests := []struct {
-		name      string
-		signalEnv string
-		signalVal string
-		globalVal string
-		expected  string
-	}{
-		{
-			name:      "signal-specific override",
-			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-			signalVal: "http/protobuf",
-			globalVal: "grpc",
-			expected:  "http/protobuf",
-		},
-		{
-			name:      "falls back to global",
-			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-			signalVal: "",
-			globalVal: "http/protobuf",
-			expected:  "http/protobuf",
-		},
-		{
-			name:      "defaults to grpc",
-			signalEnv: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-			signalVal: "",
-			globalVal: "",
-			expected:  "grpc",
-		},
-		{
-			name:      "logs signal override",
-			signalEnv: "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
-			signalVal: "http/json",
-			globalVal: "grpc",
-			expected:  "http/json",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Unsetenv(tt.signalEnv)
-			os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-
-			if tt.signalVal != "" {
-				os.Setenv(tt.signalEnv, tt.signalVal)
-			}
-			if tt.globalVal != "" {
-				os.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", tt.globalVal)
-			}
-
-			defer func() {
-				os.Unsetenv(tt.signalEnv)
-				os.Unsetenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-			}()
-
-			result := resolveProtocol(tt.signalEnv)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+	assert.NoError(t, shutdown(context.Background()))
 }
 
 func TestParseLogLevel(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		input string
@@ -349,6 +357,7 @@ func TestParseLogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, ParseLogLevel(tt.input))
 		})
 	}

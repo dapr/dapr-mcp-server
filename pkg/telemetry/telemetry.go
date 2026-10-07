@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -23,18 +24,41 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// envLogLevel names the variable that sets the minimum log level.
-const envLogLevel = "DAPR_MCP_SERVER_LOG_LEVEL"
+const (
+	envLogLevel           = "DAPR_MCP_SERVER_LOG_LEVEL"
+	envMetricsEnabled     = "DAPR_MCP_SERVER_METRICS_ENABLED"
+	envLogsEnabled        = "DAPR_MCP_SERVER_LOGS_OTEL_ENABLED"
+	envServiceName        = "OTEL_SERVICE_NAME"
+	envServiceVersion     = "OTEL_SERVICE_VERSION"
+	envMetricExportPeriod = "OTEL_METRIC_EXPORT_INTERVAL"
+	envLogExportPeriod    = "OTEL_LOG_EXPORT_INTERVAL"
+
+	// DefaultServiceName is the service.name reported when OTEL_SERVICE_NAME is unset.
+	DefaultServiceName = "dapr-mcp-server"
+
+	// instrumentationName names the tracer, meter and logger this package creates.
+	instrumentationName = "dapr-mcp-server"
+
+	defaultMetricExportInterval = 10 * time.Second
+	defaultLogExportInterval    = 5 * time.Second
+)
 
 // Config holds the telemetry configuration.
+//
+// Endpoint, Protocol, Insecure and Headers are the generic OTLP settings.
+// The signal-specific OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_* variables
+// override them per signal when Init runs.
 type Config struct {
 	ServiceName    string
 	ServiceVersion string
 	Endpoint       string
-	Protocol       string // "grpc" or "http/protobuf"
+	Protocol       string // ProtocolGRPC or ProtocolHTTPProtobuf
 	Headers        map[string]string
 	MetricsEnabled bool
 	LogsEnabled    bool
+	// Insecure selects plaintext for an Endpoint given without a scheme.
+	// An explicit http:// or https:// scheme always wins.
+	Insecure bool
 }
 
 // Telemetry holds the telemetry providers.
@@ -46,90 +70,46 @@ type Telemetry struct {
 	shutdown       []func(context.Context) error
 }
 
-// DefaultConfig returns a configuration from environment variables.
+// DefaultConfig returns a configuration from the generic OTEL_* environment variables.
 func DefaultConfig() Config {
-	protocol := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
-	if protocol == "" {
-		protocol = os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-	}
-	if protocol == "" {
-		protocol = "grpc"
-	}
-
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-	if endpoint == "" {
-		endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	}
-
-	headersStr := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")
-	headers := parseHeaders(headersStr)
-
-	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	serviceName := os.Getenv(envServiceName)
 	if serviceName == "" {
-		serviceName = "dapr-mcp-server"
+		serviceName = DefaultServiceName
 	}
 
-	serviceVersion := os.Getenv("OTEL_SERVICE_VERSION")
+	serviceVersion := os.Getenv(envServiceVersion)
 	if serviceVersion == "" {
 		serviceVersion = "v1.0.0"
 	}
 
-	metricsEnabled := os.Getenv("DAPR_MCP_SERVER_METRICS_ENABLED") != "false"
-	logsEnabled := os.Getenv("DAPR_MCP_SERVER_LOGS_OTEL_ENABLED") != "false"
+	insecure := false
+	if raw := os.Getenv(envOTLPInsecure); raw != "" {
+		insecure = parseBoolEnv(envOTLPInsecure, raw, false, slog.Default())
+	}
 
 	return Config{
 		ServiceName:    serviceName,
 		ServiceVersion: serviceVersion,
-		Endpoint:       endpoint,
-		Protocol:       protocol,
-		Headers:        headers,
-		MetricsEnabled: metricsEnabled,
-		LogsEnabled:    logsEnabled,
+		Endpoint:       os.Getenv(envOTLPEndpoint),
+		Protocol:       firstNonEmpty(os.Getenv(envOTLPProtocol), ProtocolGRPC),
+		Headers:        parseHeaders(os.Getenv(envOTLPHeaders)),
+		MetricsEnabled: os.Getenv(envMetricsEnabled) != "false",
+		LogsEnabled:    os.Getenv(envLogsEnabled) != "false",
+		Insecure:       insecure,
 	}
-}
-
-// parseHeaders parses the OTEL_EXPORTER_OTLP_HEADERS format.
-func parseHeaders(headersStr string) map[string]string {
-	headers := make(map[string]string)
-	if headersStr == "" {
-		return headers
-	}
-	for _, pair := range strings.Split(headersStr, ",") {
-		if kv := strings.SplitN(pair, "=", 2); len(kv) == 2 {
-			headers[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
-		}
-	}
-	return headers
-}
-
-// resolveProtocol resolves the OTLP protocol for a specific signal.
-// It checks the signal-specific env var first, then the global OTEL_EXPORTER_OTLP_PROTOCOL,
-// and defaults to "grpc".
-func resolveProtocol(signalEnv string) string {
-	protocol := os.Getenv(signalEnv)
-	if protocol == "" {
-		protocol = os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-	}
-	if protocol == "" {
-		protocol = "grpc"
-	}
-	return protocol
 }
 
 // Init initializes OpenTelemetry with the given configuration.
+// Each signal is exported only when it has an endpoint,
+// from either cfg.Endpoint or its signal-specific variable.
 func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
-	t := &Telemetry{
-		shutdown: make([]func(context.Context) error, 0),
-	}
+	t := &Telemetry{}
 
-	// Set up propagator
-	prop := propagation.NewCompositeTextMapPropagator(
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
-	)
-	otel.SetTextMapPropagator(prop)
+	))
 
-	// Create resource
 	resource := sdkresource.NewSchemaless(
 		attribute.String("service.name", cfg.ServiceName),
 		attribute.String("service.version", cfg.ServiceVersion),
@@ -139,72 +119,52 @@ func Init(ctx context.Context, cfg Config) (*Telemetry, error) {
 	t.Logger = withServiceAttrs(slog.New(baseHandler), cfg)
 	slog.SetDefault(t.Logger)
 
-	if cfg.Endpoint == "" {
-		t.Logger.Info("OTEL endpoint not configured, telemetry disabled")
-		return t, nil
-	}
-
-	// Initialize tracer
 	if err := t.initTracer(ctx, cfg, resource); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init tracer: %w", err)
 	}
 
-	// Initialize metrics
 	if cfg.MetricsEnabled {
 		if err := t.initMetrics(ctx, cfg, resource); err != nil {
-			t.Logger.Warn("failed to initialize metrics", "error", err)
+			t.Logger.Warn("failed to initialize metrics", "error", fmt.Errorf("init metrics: %w", err))
 		}
 	}
 
-	// Initialize logs export
 	if cfg.LogsEnabled {
 		if err := t.initLogs(ctx, cfg, resource); err != nil {
-			t.Logger.Warn("failed to initialize OTEL logs", "error", err)
-		} else {
+			t.Logger.Warn("failed to initialize OTEL logs", "error", fmt.Errorf("init logs: %w", err))
+		} else if t.LoggerProvider != nil {
 			t.Logger = withServiceAttrs(slog.New(NewOTELHandler(t.LoggerProvider, baseHandler)), cfg)
 			slog.SetDefault(t.Logger)
 		}
 	}
 
+	if t.TracerProvider == nil && t.MeterProvider == nil && t.LoggerProvider == nil {
+		t.Logger.Info("OTEL endpoint not configured, telemetry disabled")
+	}
 	return t, nil
 }
 
-// initTracer initializes the trace provider.
+// initTracer initializes the trace provider, or does nothing when traces have no endpoint.
 func (t *Telemetry) initTracer(ctx context.Context, cfg Config, resource *sdkresource.Resource) error {
-	var exporter sdktrace.SpanExporter
-	var err error
-
-	switch cfg.Protocol {
-	case "grpc":
-		cleanEndpoint := strings.TrimPrefix(cfg.Endpoint, "http://")
-		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
-		exporter, err = otlptracegrpc.New(ctx,
-			otlptracegrpc.WithEndpoint(cleanEndpoint),
-			otlptracegrpc.WithHeaders(cfg.Headers),
-			otlptracegrpc.WithInsecure(),
-		)
-	case "http/protobuf", "http/json":
-		endpoint := cfg.Endpoint
-		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-			endpoint = "http://" + endpoint
-		}
-		exporter, err = otlptracehttp.New(ctx,
-			otlptracehttp.WithEndpoint(endpoint),
-			otlptracehttp.WithHeaders(cfg.Headers),
-		)
-	default:
-		t.Logger.Warn("unsupported OTEL protocol, defaulting to grpc", "protocol", cfg.Protocol)
-		cleanEndpoint := strings.TrimPrefix(cfg.Endpoint, "http://")
-		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
-		exporter, err = otlptracegrpc.New(ctx,
-			otlptracegrpc.WithEndpoint(cleanEndpoint),
-			otlptracegrpc.WithHeaders(cfg.Headers),
-			otlptracegrpc.WithInsecure(),
-		)
+	target, ok, err := resolveExporterTarget(cfg, signalTraces, os.Getenv, t.Logger)
+	if err != nil || !ok {
+		return err
 	}
 
+	var exporter sdktrace.SpanExporter
+	if target.Protocol == ProtocolHTTPProtobuf {
+		exporter, err = otlptracehttp.New(ctx,
+			otlptracehttp.WithEndpointURL(target.URL),
+			otlptracehttp.WithHeaders(target.Headers),
+		)
+	} else {
+		exporter, err = otlptracegrpc.New(ctx,
+			otlptracegrpc.WithEndpointURL(target.URL),
+			otlptracegrpc.WithHeaders(target.Headers),
+		)
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("create trace exporter: %w", err)
 	}
 
 	t.TracerProvider = sdktrace.NewTracerProvider(
@@ -214,53 +174,35 @@ func (t *Telemetry) initTracer(ctx context.Context, cfg Config, resource *sdkres
 	otel.SetTracerProvider(t.TracerProvider)
 
 	t.shutdown = append(t.shutdown, t.TracerProvider.Shutdown)
-	t.Logger.Info("tracer initialized", "endpoint", cfg.Endpoint, "protocol", cfg.Protocol)
-
+	t.Logger.Info("tracer initialized", "endpoint", target.URL, "protocol", target.Protocol)
 	return nil
 }
 
-// initMetrics initializes the metrics provider.
+// initMetrics initializes the metrics provider, or does nothing when metrics have no endpoint.
 func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkresource.Resource) error {
-	metricsEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-	if metricsEndpoint == "" {
-		metricsEndpoint = cfg.Endpoint
-	}
-
-	protocol := resolveProtocol("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
-
-	var exporter sdkmetric.Exporter
-	var err error
-
-	switch protocol {
-	case "http/protobuf", "http/json":
-		endpoint := metricsEndpoint
-		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-			endpoint = "http://" + endpoint
-		}
-		t.Logger.Debug("creating metrics exporter", "endpoint", endpoint, "protocol", protocol)
-		exporter, err = otlpmetrichttp.New(ctx,
-			otlpmetrichttp.WithEndpoint(endpoint),
-			otlpmetrichttp.WithHeaders(cfg.Headers),
-		)
-	default:
-		cleanEndpoint := strings.TrimPrefix(metricsEndpoint, "http://")
-		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
-		t.Logger.Debug("creating metrics exporter", "endpoint", cleanEndpoint, "protocol", protocol)
-		exporter, err = otlpmetricgrpc.New(ctx,
-			otlpmetricgrpc.WithEndpoint(cleanEndpoint),
-			otlpmetricgrpc.WithHeaders(cfg.Headers),
-			otlpmetricgrpc.WithInsecure(),
-		)
-	}
-
-	if err != nil {
-		t.Logger.Error("failed to create metrics exporter", "error", err)
+	target, ok, err := resolveExporterTarget(cfg, signalMetrics, os.Getenv, t.Logger)
+	if err != nil || !ok {
 		return err
 	}
 
-	// Configure flush interval (default 10s, configurable via env)
-	flushInterval := 10 * time.Second
-	if intervalStr := os.Getenv("OTEL_METRIC_EXPORT_INTERVAL"); intervalStr != "" {
+	var exporter sdkmetric.Exporter
+	if target.Protocol == ProtocolHTTPProtobuf {
+		exporter, err = otlpmetrichttp.New(ctx,
+			otlpmetrichttp.WithEndpointURL(target.URL),
+			otlpmetrichttp.WithHeaders(target.Headers),
+		)
+	} else {
+		exporter, err = otlpmetricgrpc.New(ctx,
+			otlpmetricgrpc.WithEndpointURL(target.URL),
+			otlpmetricgrpc.WithHeaders(target.Headers),
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("create metric exporter: %w", err)
+	}
+
+	flushInterval := defaultMetricExportInterval
+	if intervalStr := os.Getenv(envMetricExportPeriod); intervalStr != "" {
 		if parsed, err := time.ParseDuration(intervalStr); err == nil {
 			flushInterval = parsed
 		}
@@ -275,53 +217,35 @@ func (t *Telemetry) initMetrics(ctx context.Context, cfg Config, resource *sdkre
 	otel.SetMeterProvider(t.MeterProvider)
 
 	t.shutdown = append(t.shutdown, t.MeterProvider.Shutdown)
-	t.Logger.Info("metrics initialized", "endpoint", metricsEndpoint, "flush_interval", flushInterval)
-
+	t.Logger.Info("metrics initialized", "endpoint", target.URL, "protocol", target.Protocol, "flush_interval", flushInterval)
 	return nil
 }
 
-// initLogs initializes the OTEL log provider.
+// initLogs initializes the OTEL log provider, or does nothing when logs have no endpoint.
 func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresource.Resource) error {
-	logsEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
-	if logsEndpoint == "" {
-		logsEndpoint = cfg.Endpoint
-	}
-
-	protocol := resolveProtocol("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL")
-
-	var exporter sdklog.Exporter
-	var err error
-
-	switch protocol {
-	case "http/protobuf", "http/json":
-		endpoint := logsEndpoint
-		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-			endpoint = "http://" + endpoint
-		}
-		t.Logger.Debug("creating logs exporter", "endpoint", endpoint, "protocol", protocol)
-		exporter, err = otlploghttp.New(ctx,
-			otlploghttp.WithEndpoint(endpoint),
-			otlploghttp.WithHeaders(cfg.Headers),
-		)
-	default:
-		cleanEndpoint := strings.TrimPrefix(logsEndpoint, "http://")
-		cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "https://")
-		t.Logger.Debug("creating logs exporter", "endpoint", cleanEndpoint, "protocol", protocol)
-		exporter, err = otlploggrpc.New(ctx,
-			otlploggrpc.WithEndpoint(cleanEndpoint),
-			otlploggrpc.WithHeaders(cfg.Headers),
-			otlploggrpc.WithInsecure(),
-		)
-	}
-
-	if err != nil {
-		t.Logger.Error("failed to create logs exporter", "error", err)
+	target, ok, err := resolveExporterTarget(cfg, signalLogs, os.Getenv, t.Logger)
+	if err != nil || !ok {
 		return err
 	}
 
-	// Configure flush interval (default 5s, configurable via env)
-	flushInterval := 5 * time.Second
-	if intervalStr := os.Getenv("OTEL_LOG_EXPORT_INTERVAL"); intervalStr != "" {
+	var exporter sdklog.Exporter
+	if target.Protocol == ProtocolHTTPProtobuf {
+		exporter, err = otlploghttp.New(ctx,
+			otlploghttp.WithEndpointURL(target.URL),
+			otlploghttp.WithHeaders(target.Headers),
+		)
+	} else {
+		exporter, err = otlploggrpc.New(ctx,
+			otlploggrpc.WithEndpointURL(target.URL),
+			otlploggrpc.WithHeaders(target.Headers),
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("create log exporter: %w", err)
+	}
+
+	flushInterval := defaultLogExportInterval
+	if intervalStr := os.Getenv(envLogExportPeriod); intervalStr != "" {
 		if parsed, err := time.ParseDuration(intervalStr); err == nil {
 			flushInterval = parsed
 		}
@@ -335,8 +259,7 @@ func (t *Telemetry) initLogs(ctx context.Context, cfg Config, resource *sdkresou
 	)
 
 	t.shutdown = append(t.shutdown, t.LoggerProvider.Shutdown)
-	t.Logger.Info("logs exporter initialized", "endpoint", logsEndpoint, "flush_interval", flushInterval)
-
+	t.Logger.Info("logs exporter initialized", "endpoint", target.URL, "protocol", target.Protocol, "flush_interval", flushInterval)
 	return nil
 }
 
