@@ -147,7 +147,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
 		Instructions: instructions,
-		HasTools:     true,
+		Capabilities: &mcp.ServerCapabilities{
+			Logging: &mcp.LoggingCapabilities{},
+			Tools:   &mcp.ToolCapabilities{ListChanged: true},
+		},
 	})
 
 	healthChecker := health.NewHandler(daprClient, Version, logger)
