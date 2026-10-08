@@ -201,12 +201,11 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Description: "Saves a single key-value pair to a Dapr state store. **This is a SIDE-EFFECT action that alters application state and IS IDEMPOTENT.** Use only when the agent needs to persist data or update an entity.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `storeName` of the state store.\n" +
-			"2. For `key`, use a meaningful identifier.\n\n" +
+			"2. For `key`, use a meaningful identifier. Dapr already scopes keys to this server's app ID, so do not add an app ID prefix.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide non-empty values for `storeName`, `key`, and `value`.\n" +
-			"2. **KEY RULE**: The key SHOULD follow `<AppID>||<ResourceURI>||<Index>` when possible for discoverability, matching Dapr's own `||` key separator.\n" +
-			"3. **VALUE RULE**: The `value` must be a string (plain or JSON-encoded).\n" +
-			"4. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.",
+			"2. **VALUE RULE**: The `value` must be a string (plain or JSON-encoded).\n" +
+			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.",
 		Annotations: toolkit.IdempotentWrite.Annotations(true),
 	}, h.saveState)
 	mcp.AddTool(server, &mcp.Tool{

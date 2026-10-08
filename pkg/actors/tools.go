@@ -95,11 +95,11 @@ func RegisterTools(server *mcp.Server, client ActorClient, metrics *telemetry.To
 		Title: "Execute Stateful Actor Method",
 		Description: "Executes a method on a Dapr Virtual Actor instance, providing durability and concurrency control. **This is a DESTRUCTIVE SIDE-EFFECT action that alters state (e.g., creating an order, updating a payment status) and is NOT IDEMPOTENT.** Use this tool exclusively for requests that require stateful, single-threaded execution.\n\n" +
 			"**GUIDANCE:**\n" +
-			"1. Use `get_components` to find the `actorType` of the actor.\n" +
+			"1. Take the `actorType` from the user or earlier context. `get_components` does not list actor types.\n" +
 			"2. Ensure `actorID` and `method` are explicitly provided by the user.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide non-empty values for `actorType`, `actorID`, and `method`. Provide `data` whenever the method takes input.\n" +
-			"2. **NEVER INVENT**: You must NOT invent the `actorType`, `actorID`, or `method` names; they must be provided by the user or discovered via another tool.\n" +
+			"2. **NEVER INVENT**: You must NOT invent the `actorType`, `actorID`, or `method` names; they must be provided by the user.\n" +
 			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification before generating the tool call.\n\n" +
 			"**DATA FORMAT**: The `data` payload MUST be a single string (often JSON) representing the input parameters for the actor method.",
 		Annotations: toolkit.DestructiveWrite.Annotations(true),

@@ -175,14 +175,14 @@ func RegisterTools(server *mcp.Server, client InvokeClient, metrics *telemetry.T
 		Title: "Execute Inter-Service Request",
 		Description: "Calls a method (endpoint) on another Dapr-enabled service. **This is a DESTRUCTIVE SIDE-EFFECT action that is NOT IDEMPOTENT.** Use this tool to perform transactional business logic (e.g., updating data, creating resources, triggering workflows).\n\n" +
 			"**GUIDANCE:**\n" +
-			"1. Use `get_components` to find the `appID` of the target service.\n" +
+			"1. Take the `appID` of the target service from the user or earlier context. `get_components` does not list applications.\n" +
 			"2. For `httpVerb`, use 'GET' for read-only status checks, 'POST' for creation, and 'DELETE' for removal. Default is 'POST'.\n" +
 			"3. Use `metadata` to send HTTP headers to the target service.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide non-empty values for `appID` and `method`.\n" +
 			"2. **NEVER INVENT**: You must NOT invent `appID` or `method` names; they must be provided by the user or discovered.\n" +
 			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.\n\n" +
-			"**SECURITY WARNING**: This tool bypasses the standard Resource/Tool abstraction and directly executes service logic. Ensure user intent is clear and the operation is authorized.",
+			"**SECURITY WARNING**: This tool runs business logic in another service. Ensure user intent is clear and the operation is authorized.",
 		Annotations: toolkit.DestructiveWrite.Annotations(true),
 	}, h.invokeService)
 }
