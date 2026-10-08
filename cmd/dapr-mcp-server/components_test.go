@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -90,8 +91,8 @@ func TestPresentBuildingBlocks(t *testing.T) {
 	}
 }
 
-// listToolNames connects an in-memory client to server and returns the sorted names of its tools.
-func listToolNames(t *testing.T, server *mcp.Server) []string {
+// listTools connects an in-memory client to server and returns its tools.
+func listTools(t *testing.T, server *mcp.Server) []*mcp.Tool {
 	t.Helper()
 	ctx := context.Background()
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -107,9 +108,15 @@ func listToolNames(t *testing.T, server *mcp.Server) []string {
 
 	result, err := clientSession.ListTools(ctx, nil)
 	require.NoError(t, err)
+	return result.Tools
+}
 
-	names := make([]string, 0, len(result.Tools))
-	for _, tool := range result.Tools {
+// listToolNames returns the sorted names of the tools registered on server.
+func listToolNames(t *testing.T, server *mcp.Server) []string {
+	t.Helper()
+	tools := listTools(t, server)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
@@ -164,6 +171,24 @@ func TestRegisterTools(t *testing.T) {
 			require.NoError(t, registerTools(context.Background(), server, client, nil, discardLogger()))
 			assert.Equal(t, tt.want, listToolNames(t, server))
 		})
+	}
+}
+
+// TestToolInputSchemasAreNotNullable guards against slice arguments being typed ["null","array"],
+// which some LLM clients reject when they convert the schema into a function definition.
+func TestToolInputSchemasAreNotNullable(t *testing.T) {
+	client := newTestDaprClient()
+	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes(
+		"state.redis", "pubsub.redis", "bindings.http", "secretstores.local.env",
+		"lock.redis", "conversation.echo", "crypto.dapr.localstorage",
+	), nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0.0.0"}, nil)
+	require.NoError(t, registerTools(context.Background(), server, client, nil, discardLogger()))
+
+	for _, tool := range listTools(t, server) {
+		schema, err := json.Marshal(tool.InputSchema)
+		require.NoError(t, err)
+		assert.NotContains(t, string(schema), `"null"`, "tool %s has a nullable input type", tool.Name)
 	}
 }
 

@@ -119,7 +119,7 @@ Classification matters for retry and rollback logic.
 
 - Safe to auto-retry: anything `idempotent`.
 - Needs human-in-the-loop confirmation for first call: anything marked `destructive`.
-- Never invent component names, keys, topics, actor IDs, secret names, or crypto parameters. Derive them from `get_components` or ask the user.
+- Never invent component names, keys, topics, actor IDs, secret names, or crypto parameters. Take component names from `get_components` and everything else from the user.
 - `metadata` fields are maps, not JSON-encoded strings. `{}`, never `"{}"`.
 - For multi-step workflows, run tools **one at a time** and inspect the result before the next call.
 

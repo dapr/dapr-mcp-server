@@ -180,8 +180,9 @@ func registerTools(server *mcp.Server, client ConversationClient, metrics *telem
 	h := &handler{client: client, inst: toolkit.NewInstrumentation(metrics), newID: uuid.NewRandom}
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:  toolConverseWithLLM,
-		Title: "Delegate Task to External Reasoning Engine",
+		Name:        toolConverseWithLLM,
+		Title:       "Delegate Task to External Reasoning Engine",
+		InputSchema: toolkit.InputSchema[ConverseArgs](),
 		Description: "Delegates a single, immediate reasoning or text generation task to a secondary LLM component. **This is a READ-ONLY and IDEMPOTENT operation.** The server handles complex message history formatting internally, accepting only the user's direct prompt, the component name, and an optional context ID for session continuity.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `name` of the LLM component.\n" +

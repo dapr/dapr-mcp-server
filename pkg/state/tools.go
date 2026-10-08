@@ -201,12 +201,11 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Description: "Saves a single key-value pair to a Dapr state store. **This is a SIDE-EFFECT action that alters application state and IS IDEMPOTENT.** Use only when the agent needs to persist data or update an entity.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `storeName` of the state store.\n" +
-			"2. For `key`, use a meaningful identifier.\n\n" +
+			"2. For `key`, use a meaningful identifier. Dapr applies the state store's key prefix itself (by default the app ID), so do not add one.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide non-empty values for `storeName`, `key`, and `value`.\n" +
-			"2. **KEY RULE**: The key SHOULD follow `<AppID>||<ResourceURI>||<Index>` when possible for discoverability, matching Dapr's own `||` key separator.\n" +
-			"3. **VALUE RULE**: The `value` must be a string (plain or JSON-encoded).\n" +
-			"4. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.",
+			"2. **VALUE RULE**: The `value` must be a string (plain or JSON-encoded).\n" +
+			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.",
 		Annotations: toolkit.IdempotentWrite.Annotations(true),
 	}, h.saveState)
 	mcp.AddTool(server, &mcp.Tool{
@@ -235,8 +234,9 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Annotations: toolkit.DestructiveIdempotent.Annotations(true),
 	}, h.deleteState)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:  toolExecuteTransaction,
-		Title: "Execute Atomic State Transaction",
+		Name:        toolExecuteTransaction,
+		Title:       "Execute Atomic State Transaction",
+		InputSchema: toolkit.InputSchema[ExecuteTransactionArgs](),
 		Description: "Executes multiple save and/or delete operations atomically (all or nothing) on state stores that support transactions. **This is a complex, high-impact DESTRUCTIVE SIDE-EFFECT action that is NOT IDEMPOTENT.** Use only for batch updates or when strict data consistency is required across multiple keys.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `storeName` of the state store.\n" +
