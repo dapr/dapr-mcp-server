@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,21 +17,9 @@ import (
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 
-	actor "github.com/dapr/dapr-mcp-server/pkg/actors"
 	"github.com/dapr/dapr-mcp-server/pkg/auth"
-	binding "github.com/dapr/dapr-mcp-server/pkg/bindings"
-	conversation "github.com/dapr/dapr-mcp-server/pkg/conversation"
-	crypto "github.com/dapr/dapr-mcp-server/pkg/crypto"
 	"github.com/dapr/dapr-mcp-server/pkg/health"
-	invoke "github.com/dapr/dapr-mcp-server/pkg/invoke"
-	lock "github.com/dapr/dapr-mcp-server/pkg/lock"
-	metadata "github.com/dapr/dapr-mcp-server/pkg/metadata"
-	pubsub "github.com/dapr/dapr-mcp-server/pkg/pubsub"
-	secret "github.com/dapr/dapr-mcp-server/pkg/secrets"
-	state "github.com/dapr/dapr-mcp-server/pkg/state"
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
 )
 
@@ -37,34 +27,42 @@ const (
 	daprClientMaxAttempts = 5
 	daprClientRetryDelay  = 2 * time.Second
 	readHeaderTimeout     = 10 * time.Second
+	httpIdleTimeout       = 120 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
 	httpShutdownTimeout   = 15 * time.Second
 	telemetryFlushTimeout = 10 * time.Second
-	healthCheckURL        = "http://localhost:8080/livez"
+	logLevelEnv           = "DAPR_MCP_SERVER_LOG_LEVEL"
+	corsOriginEnv         = "DAPR_MCP_CORS_ORIGIN"
+	corsAllowMethods      = "GET, POST, PUT, DELETE, OPTIONS"
+	corsAllowHeaders      = "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version"
+	corsExposeHeaders     = "Mcp-Session-Id, Mcp-Protocol-Version"
 )
 
 var (
 	// Version is set at build time via -ldflags
 	Version = "dev"
 
-	httpAddr    = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
-	healthCheck = flag.Bool("health-check", false, "run a health check against the running server and exit")
-	DaprClient  dapr.Client
+	httpAddr        = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	showVersion     = flag.Bool("version", false, "print the version and exit")
+	healthCheck     = flag.Bool("health-check", false, "run a health check against the running server and exit")
+	healthCheckAddr = flag.String("health-check-addr", "", "host:port probed by --health-check (default: derived from --http, else "+defaultHealthCheckAddr+")")
 )
 
 func main() {
 	flag.Parse()
 
-	if *healthCheck {
-		if err := runHealthCheck(); err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
+	if *showVersion {
+		printVersion(os.Stdout)
+		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: telemetry.ParseLogLevel(os.Getenv("DAPR_MCP_SERVER_LOG_LEVEL")),
-	}))
+	if *healthCheck {
+		os.Exit(healthCheckMain(os.Stderr))
+	}
+
+	logger := newLogger(os.Stderr)
 	slog.SetDefault(logger)
+	redirectDaprSDKLogs(os.Stderr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	err := run(ctx, logger)
@@ -75,21 +73,34 @@ func main() {
 	}
 }
 
-// runHealthCheck probes the liveness endpoint of a locally running server.
-func runHealthCheck() error {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthCheckURL, nil)
-	if err != nil {
-		return fmt.Errorf("build health check request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // health check against localhost only
-	if err != nil {
-		return fmt.Errorf("health check request: %w", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check returned status %d", resp.StatusCode)
+// runStdio serves MCP over t until ctx is canceled or the client disconnects.
+// The transport is not wrapped in a logging transport,
+// because that would copy every request and response, secrets included, to stderr.
+// Cancellation is the normal signal shutdown, so it is not reported as an error.
+func runStdio(ctx context.Context, server *mcp.Server, t mcp.Transport) error {
+	if err := server.Run(ctx, t); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("stdio server: %w", err)
 	}
 	return nil
+}
+
+func printVersion(w io.Writer) {
+	_, _ = fmt.Fprintln(w, Version)
+}
+
+// newLogger builds the JSON logger that writes to w.
+// main passes os.Stderr because in the stdio transport stdout carries the JSON-RPC stream.
+func newLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level: telemetry.ParseLogLevel(os.Getenv(logLevelEnv)),
+	}))
+}
+
+// redirectDaprSDKLogs sends the Dapr Go SDK's package logger to w.
+// The SDK writes to stdout by default, which in the stdio transport would put
+// non-JSON-RPC text ahead of the MCP handshake.
+func redirectDaprSDKLogs(w io.Writer) {
+	dapr.SetLogger(log.New(w, "", 0))
 }
 
 // run wires up the server and blocks until ctx is canceled or the server fails.
@@ -97,7 +108,7 @@ func runHealthCheck() error {
 func run(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("Starting dapr-mcp-server", "version", Version)
 
-	shutdownTelemetry, err := telemetry.Initialize(ctx)
+	shutdownTelemetry, err := telemetry.Initialize(ctx, telemetry.WithServiceVersion(Version))
 	if err != nil {
 		logger.Warn("Failed to initialize telemetry, continuing without observability", "error", err)
 	} else {
@@ -110,28 +121,26 @@ func run(ctx context.Context, logger *slog.Logger) error {
 				slog.Error("Error shutting down telemetry", "error", flushErr)
 			}
 		}()
-		// Switch to the OTEL-wrapped logger that was set as default
+		// Initialize installs a stderr logger as the default, which also exports records when OTEL log export is on.
 		logger = slog.Default()
 		logger.Info("OpenTelemetry initialized successfully")
 	}
 
 	toolMetrics, err := telemetry.NewToolMetrics()
 	if err != nil {
-		logger.Warn("Failed to initialize tool metrics", "error", err)
+		logger.Warn("Failed to initialize tool metrics, tool calls will run without metrics", "error", err)
 	}
 
 	httpMetrics, err := telemetry.NewHTTPMetrics()
 	if err != nil {
-		logger.Warn("Failed to initialize HTTP metrics", "error", err)
+		logger.Warn("Failed to initialize HTTP metrics, requests will be served without metrics", "error", err)
 	}
 
-	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	otel.SetTextMapPropagator(prop)
-
-	if err = initializeDaprClient(ctx, logger); err != nil {
+	daprClient, err := initializeDaprClient(ctx, newDefaultDaprClient, daprClientRetryDelay, logger)
+	if err != nil {
 		return fmt.Errorf("initialize dapr client: %w", err)
 	}
-	defer DaprClient.Close()
+	defer daprClient.Close()
 
 	instructions := buildInstructions()
 	logger.Debug("Server instructions configured", "instructions", instructions)
@@ -141,36 +150,48 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		HasTools:     true,
 	})
 
-	if err = registerTools(ctx, server, toolMetrics, logger); err != nil {
+	healthChecker := health.NewHandler(daprClient, Version, logger)
+
+	if err = registerTools(ctx, server, daprClient, toolMetrics, logger); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+	healthChecker.SetStartupDone(true)
+	healthChecker.SetReady(true)
 
 	if *httpAddr == "" {
-		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
-		if err = server.Run(ctx, t); err != nil {
-			return fmt.Errorf("stdio server: %w", err)
-		}
-		return nil
+		return runStdio(ctx, server, &mcp.StdioTransport{})
 	}
 
-	healthChecker := health.NewHandler(DaprClient, Version)
-	handler, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
+	handler, authenticators, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := auth.CloseAuthenticators(authenticators); err != nil {
+			logger.Warn("Failed to close authenticators", "error", err)
+		}
+	}()
 	return serveHTTP(ctx, *httpAddr, handler, healthChecker, logger)
 }
 
-func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
+// daprClientFactory creates a Dapr client. It is a parameter so tests can avoid a real sidecar.
+type daprClientFactory func() (dapr.Client, error)
+
+func newDefaultDaprClient() (dapr.Client, error) {
+	return dapr.NewClient()
+}
+
+// initializeDaprClient calls newClient until it succeeds,
+// waiting retryDelay between up to daprClientMaxAttempts attempts.
+func initializeDaprClient(ctx context.Context, newClient daprClientFactory, retryDelay time.Duration, logger *slog.Logger) (dapr.Client, error) {
 	for attempt := 1; ; attempt++ {
-		client, err := dapr.NewClient()
+		client, err := newClient()
 		if err == nil {
-			DaprClient = client
 			logger.Info("Dapr client established successfully")
-			return nil
+			return client, nil
 		}
 		if attempt == daprClientMaxAttempts {
-			return fmt.Errorf("failed to create Dapr client after %d attempts: %w", attempt, err)
+			return nil, fmt.Errorf("failed to create Dapr client after %d attempts: %w", attempt, err)
 		}
 		logger.Warn("Dapr client initialization failed",
 			"attempt", attempt,
@@ -180,8 +201,8 @@ func initializeDaprClient(ctx context.Context, logger *slog.Logger) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting to retry Dapr client: %w", ctx.Err())
-		case <-time.After(daprClientRetryDelay):
+			return nil, fmt.Errorf("waiting to retry Dapr client: %w", ctx.Err())
+		case <-time.After(retryDelay):
 		}
 	}
 }
@@ -199,73 +220,17 @@ func buildInstructions() string {
 	return b.String()
 }
 
-// registerTools registers the core tools and then the tools for each
-// building block that has at least one component loaded in the sidecar.
-func registerTools(ctx context.Context, server *mcp.Server, toolMetrics *telemetry.ToolMetrics, logger *slog.Logger) error {
-	metadata.RegisterTools(server, DaprClient, toolMetrics)
-	invoke.RegisterTools(server, DaprClient, toolMetrics)
-	actor.RegisterTools(server, DaprClient, toolMetrics)
-
-	components, err := metadata.GetLiveComponentList(ctx, DaprClient)
-	if err != nil {
-		return fmt.Errorf("get components: %w", err)
-	}
-
-	present := make(map[string]bool)
-	for _, c := range components {
-		switch {
-		case strings.HasPrefix(c.Type, "state."):
-			present["state"] = true
-		case strings.HasPrefix(c.Type, "pubsub."):
-			present["pubsub"] = true
-		case strings.HasPrefix(c.Type, "bindings."):
-			present["bindings"] = true
-		case strings.HasPrefix(c.Type, "secretstores."):
-			present["secrets"] = true
-		case strings.HasPrefix(c.Type, "lock."):
-			present["lock"] = true
-		case strings.HasPrefix(c.Type, "conversation."):
-			present["conversation"] = true
-		case strings.HasPrefix(c.Type, "crypto."):
-			present["crypto"] = true
-		}
-	}
-	logger.Info("Discovered Dapr components", "components", present)
-
-	if present["pubsub"] {
-		pubsub.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["bindings"] {
-		binding.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["state"] {
-		state.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["secrets"] {
-		secret.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["conversation"] {
-		conversation.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["crypto"] {
-		crypto.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	if present["lock"] {
-		lock.RegisterTools(server, DaprClient, toolMetrics)
-	}
-	return nil
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	origin := os.Getenv("DAPR_MCP_CORS_ORIGIN")
+// corsMiddleware adds CORS headers for origin and answers preflight requests.
+// An empty origin disables CORS entirely, so browsers on other origins are refused by default.
+func corsMiddleware(origin string, next http.Handler) http.Handler {
 	if origin == "" {
-		origin = "*"
+		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version")
-		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version")
+		w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+		w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -276,24 +241,25 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, error) {
+// buildHTTPHandler wires the health, subscription and MCP routes, with auth in front of MCP.
+// The returned authenticators hold background resources, so the caller closes them once the server stops.
+func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, []auth.Authenticator, error) {
 	authConfig := auth.DefaultConfig()
 	if err := authConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid authentication configuration: %w", err)
+		return nil, nil, fmt.Errorf("invalid authentication configuration: %w", err)
 	}
 
+	var authenticators []auth.Authenticator
 	authMiddleware := auth.NoopMiddleware
-	if authConfig.Enabled && authConfig.Mode != auth.ModeDisabled {
+	if authConfig.Enabled() {
 		logger.Info("Starting authentication initialization", "mode", authConfig.Mode)
-		authenticators, err := buildAuthenticators(ctx, authConfig, logger)
+		var err error
+		authenticators, err = buildAuthenticators(ctx, authConfig, logger)
 		if err != nil {
-			return nil, fmt.Errorf("initialize authenticators: %w", err)
+			return nil, nil, fmt.Errorf("initialize authenticators: %w", err)
 		}
 		authMiddleware = auth.NewMiddleware(authConfig, authenticators, logger).Handler
-		logger.Info("Authentication enabled",
-			"mode", authConfig.Mode,
-			"skip_paths", authConfig.SkipPaths,
-		)
+		logger.Info("Authentication enabled", "mode", authConfig.Mode)
 	} else {
 		logger.Info("Authentication disabled")
 	}
@@ -301,9 +267,7 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	mux := http.NewServeMux()
 
 	// Health endpoints sit outside the auth middleware.
-	mux.HandleFunc("/livez", healthChecker.LivenessHandler)
-	mux.HandleFunc("/readyz", healthChecker.ReadinessHandler)
-	mux.HandleFunc("/startupz", healthChecker.StartupHandler)
+	healthChecker.RegisterHandlers(mux)
 
 	mux.HandleFunc("/dapr/subscribe", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -314,8 +278,8 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 	// Telemetry is the outer layer so metrics cover every request, including auth failures.
 	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
 
-	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled)
-	return corsMiddleware(mux), nil
+	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled())
+	return corsMiddleware(os.Getenv(corsOriginEnv), mux), authenticators, nil
 }
 
 // serveHTTP serves until ctx is canceled, then marks the server not ready
@@ -324,10 +288,13 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChe
 	streamsCtx, closeStreams := context.WithCancel(context.Background())
 	defer closeStreams()
 
+	// WriteTimeout stays unset: server-sent event streams are long-lived responses.
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           closeStreamsOnShutdown(streamsCtx, handler),
 		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	srv.RegisterOnShutdown(closeStreams)
 
@@ -352,6 +319,9 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, healthChe
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
+		if closeErr := srv.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return fmt.Errorf("http shutdown: %w", err)
 	}
 	logger.Info("Server stopped gracefully")
@@ -376,23 +346,31 @@ func closeStreamsOnShutdown(shutdownCtx context.Context, next http.Handler) http
 	})
 }
 
-// buildAuthenticators creates the appropriate authenticators based on configuration.
-func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logger) ([]auth.Authenticator, error) {
-	var authenticators []auth.Authenticator
+// buildAuthenticators creates the authenticators the configured mode calls for.
+// A single mode enables its own authenticator; hybrid mode enables each one whose flag is set.
+// If any authenticator fails to start, the ones already created are closed.
+func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logger) (authenticators []auth.Authenticator, err error) {
+	hybrid := cfg.Mode == auth.ModeHybrid
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, auth.CloseAuthenticators(authenticators))
+			authenticators = nil
+		}
+	}()
 
-	switch cfg.Mode {
-	case auth.ModeOIDC:
+	if cfg.Mode == auth.ModeOIDC || (hybrid && cfg.OIDC.Enabled) {
 		logger.Info("Initializing OIDC authenticator",
 			"issuer_url", cfg.OIDC.IssuerURL,
 			"client_id", cfg.OIDC.ClientID,
 		)
-		oidc, err := auth.NewOIDCAuthenticator(ctx, cfg.OIDC)
+		oidc, err := auth.NewOIDCAuthenticatorWithLogger(ctx, cfg.OIDC, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create OIDC authenticator: %w", err)
+			return authenticators, fmt.Errorf("create OIDC authenticator: %w", err)
 		}
 		authenticators = append(authenticators, oidc)
+	}
 
-	case auth.ModeSPIFFE:
+	if cfg.Mode == auth.ModeSPIFFE || (hybrid && cfg.SPIFFE.Enabled) {
 		logger.Info("Initializing SPIFFE authenticator",
 			"trust_domain", cfg.SPIFFE.TrustDomain,
 			"server_id", cfg.SPIFFE.ServerID,
@@ -400,60 +378,24 @@ func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logg
 		)
 		spiffe, err := auth.NewSPIFFEAuthenticator(ctx, cfg.SPIFFE)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SPIFFE authenticator: %w", err)
+			return authenticators, fmt.Errorf("create SPIFFE authenticator: %w", err)
 		}
 		authenticators = append(authenticators, spiffe)
+	}
 
-	case auth.ModeDaprSentry:
+	if cfg.Mode == auth.ModeDaprSentry || (hybrid && cfg.DaprSentry.Enabled) {
 		logger.Info("Initializing Dapr Sentry authenticator",
 			"jwks_url", cfg.DaprSentry.JWKSUrl,
 			"trust_domain", cfg.DaprSentry.TrustDomain,
 			"audience", cfg.DaprSentry.Audience,
+			"issuer", cfg.DaprSentry.Issuer,
 			"token_header", cfg.DaprSentry.TokenHeader,
 		)
 		sentry, err := auth.NewDaprSentryAuthenticatorWithLogger(ctx, cfg.DaprSentry, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create Dapr Sentry authenticator: %w", err)
+			return authenticators, fmt.Errorf("create Dapr Sentry authenticator: %w", err)
 		}
 		authenticators = append(authenticators, sentry)
-
-	case auth.ModeHybrid:
-		if cfg.OIDC.Enabled {
-			logger.Info("Initializing OIDC authenticator (hybrid mode)",
-				"issuer_url", cfg.OIDC.IssuerURL,
-				"client_id", cfg.OIDC.ClientID,
-			)
-			oidc, err := auth.NewOIDCAuthenticator(ctx, cfg.OIDC)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create OIDC authenticator: %w", err)
-			}
-			authenticators = append(authenticators, oidc)
-		}
-		if cfg.SPIFFE.Enabled {
-			logger.Info("Initializing SPIFFE authenticator (hybrid mode)",
-				"trust_domain", cfg.SPIFFE.TrustDomain,
-				"server_id", cfg.SPIFFE.ServerID,
-				"endpoint_socket", cfg.SPIFFE.EndpointSocket,
-			)
-			spiffe, err := auth.NewSPIFFEAuthenticator(ctx, cfg.SPIFFE)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create SPIFFE authenticator: %w", err)
-			}
-			authenticators = append(authenticators, spiffe)
-		}
-		if cfg.DaprSentry.Enabled {
-			logger.Info("Initializing Dapr Sentry authenticator (hybrid mode)",
-				"jwks_url", cfg.DaprSentry.JWKSUrl,
-				"trust_domain", cfg.DaprSentry.TrustDomain,
-				"audience", cfg.DaprSentry.Audience,
-				"token_header", cfg.DaprSentry.TokenHeader,
-			)
-			sentry, err := auth.NewDaprSentryAuthenticatorWithLogger(ctx, cfg.DaprSentry, logger)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create Dapr Sentry authenticator: %w", err)
-			}
-			authenticators = append(authenticators, sentry)
-		}
 	}
 
 	logger.Info("Authenticators initialized", "count", len(authenticators))

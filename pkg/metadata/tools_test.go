@@ -1,15 +1,20 @@
 package metadata
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
@@ -75,7 +80,7 @@ func TestGetMetadataTool(t *testing.T) {
 				m.On("GetMetadata", mock.Anything).Return(nil, errors.New("connection refused"))
 			},
 			wantErr:     true,
-			wantContent: "Error fetching live Dapr component list",
+			wantContent: "fetch live Dapr component list",
 		},
 		{
 			name: "metadata retrieval with nil capabilities",
@@ -95,21 +100,22 @@ func TestGetMetadataTool(t *testing.T) {
 			setupMock:   func(m *mocks.MockDaprClient) {},
 			nilClient:   true,
 			wantErr:     true,
-			wantContent: "Dapr client not initialized",
+			wantContent: "dapr client not initialized",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var h *handler
 			if tt.nilClient {
-				metadataClient = nil
+				h, _ = newTestHandler(nil)
 			} else {
 				mockClient := new(mocks.MockDaprClient)
 				tt.setupMock(mockClient)
-				metadataClient = mockClient
+				h, _ = newTestHandler(mockClient)
 			}
 
-			result, wrapper, err := getMetadataTool(context.Background(), &mcp.CallToolRequest{}, nil)
+			result, wrapper, err := h.getComponents(context.Background(), &mcp.CallToolRequest{}, nil)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -198,10 +204,60 @@ func TestRegisterTools(t *testing.T) {
 	mockClient := new(mocks.MockDaprClient)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
 
-	// Should not panic
 	RegisterTools(server, mockClient, nil)
+}
 
-	assert.Equal(t, mockClient, metadataClient)
+func newTestHandler(client MetadataClient) (*handler, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &handler{client: client, inst: toolkit.Instrumentation{Logger: logger}}, &buf
+}
+
+func TestGetLiveComponentListPrefixMatching(t *testing.T) {
+	t.Parallel()
+	mockClient := new(mocks.MockDaprClient)
+	mockClient.On("GetMetadata", mock.Anything).Return(&dapr.GetMetadataResponse{
+		RegisteredComponents: []*dapr.MetadataRegisteredComponents{
+			nil,
+			{Name: "a", Type: "middleware.http.statecheck"},
+			{Name: "b", Type: "workflow.dapr.lockfree"},
+			{Name: "c", Type: "state.redis"},
+		},
+	}, nil)
+
+	components, err := GetLiveComponentList(context.Background(), mockClient)
+	require.NoError(t, err)
+	require.Len(t, components, 1)
+	assert.Equal(t, "c", components[0].Name)
+	assert.Equal(t, []string{}, components[0].Capabilities)
+}
+
+func TestGetLiveComponentListEmptyMarshalsAsArray(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		resp *dapr.GetMetadataResponse
+	}{
+		{name: "nil response", resp: nil},
+		{name: "no components", resp: &dapr.GetMetadataResponse{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mocks.MockDaprClient)
+			if tt.resp == nil {
+				mockClient.On("GetMetadata", mock.Anything).Return(nil, nil)
+			} else {
+				mockClient.On("GetMetadata", mock.Anything).Return(tt.resp, nil)
+			}
+
+			components, err := GetLiveComponentList(context.Background(), mockClient)
+			require.NoError(t, err)
+			b, err := json.Marshal(ComponentListWrapper{Components: components})
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"components":[]}`, string(b))
+		})
+	}
 }
 
 // mockMetadataClient implements MetadataClient for testing

@@ -13,9 +13,14 @@ on:
         type: boolean
         default: false
 
+# Read-only by default; only the jobs that publish get write access.
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+# Scripts read the version from the environment, never from an inline expression,
+# so an unvalidated input cannot be injected into the shell.
+env:
+  VERSION: ${{ github.event.inputs.version }}
 
 jobs:
   validate:
@@ -24,7 +29,6 @@ jobs:
     steps:
       - name: Validate semver format
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "Error: Version must be in semver format (e.g., v1.0.0 or v1.0.0-rc.1)"
             exit 1
@@ -86,8 +90,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build \
-            -ldflags="-s -w -X main.Version=${{ github.event.inputs.version }}" \
+          go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
             -o dapr-mcp-server-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} \
             ./cmd/dapr-mcp-server
 
@@ -102,6 +106,8 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -169,7 +175,10 @@ jobs:
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: test
+    needs: release
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -210,7 +219,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}
           format: 'sarif'

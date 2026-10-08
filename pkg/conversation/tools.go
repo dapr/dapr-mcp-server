@@ -1,21 +1,33 @@
+// Package conversation exposes the Dapr conversation building block as an
+// MCP tool.
 package conversation
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
+)
+
+const (
+	packageName = "conversation"
+
+	toolConverseWithLLM = "converse_with_llm"
+
+	attrConversationName = "dapr.conversation.name"
+
+	// DefaultTemperature is the temperature used when the caller sets none.
+	DefaultTemperature = 0.7
+
+	resultKeyContextID = "context_id"
 )
 
 // ConversationClient defines the interface for conversation operations.
@@ -34,202 +46,150 @@ func (a *daprClientAdapter) ConverseAlpha2(ctx context.Context, req dapr.Convers
 	return a.client.ConverseAlpha2(ctx, req)
 }
 
+// ConverseArgs are the arguments of the converse_with_llm tool.
 type ConverseArgs struct {
-	Name        string  `json:"name" jsonschema:"The Dapr component name of the LLM service (e.g., 'ollama', 'openai')."`
-	Prompt      string  `json:"prompt" jsonschema:"The user's direct question or instruction to the LLM."`
-	ContextID   string  `json:"contextId,omitempty" jsonschema:"Optional: Unique ID for continuing a specific conversation context/history."`
-	Temperature float64 `json:"temperature,omitempty" jsonschema:"Optional: LLM temperature setting (0.0 to 1.0). Default is 0.7."`
+	Name        string   `json:"name" jsonschema:"The Dapr component name of the LLM service (e.g., 'ollama', 'openai')."`
+	Prompt      string   `json:"prompt" jsonschema:"The user's direct question or instruction to the LLM."`
+	ContextID   string   `json:"contextId,omitempty" jsonschema:"Optional: Unique ID for continuing a specific conversation context/history. Pass back the context_id returned by a previous call."`
+	Temperature *float64 `json:"temperature,omitempty" jsonschema:"Optional: LLM temperature setting (0.0 to 1.0). 0.0 is deterministic. Default is 0.7."`
 }
 
-var (
-	daprClient  ConversationClient
-	toolMetrics *telemetry.ToolMetrics
-)
+type handler struct {
+	client ConversationClient
+	inst   toolkit.Instrumentation
+	newID  func() (uuid.UUID, error)
+}
 
-func converseTool(ctx context.Context, req *mcp.CallToolRequest, args ConverseArgs) (*mcp.CallToolResult, any, error) {
-	// Start metrics timer
-	var timer *telemetry.Timer
-	if toolMetrics != nil {
-		timer = toolMetrics.StartTimer(ctx, "converse", "conversation")
-	}
-
-	ctx, span := otel.Tracer("dapr-mcp-server").Start(ctx, "converse")
-	defer span.End()
-	span.SetAttributes(
-		attribute.String("mcp.tool.name", "converse"),
-		attribute.String("mcp.tool.package", "conversation"),
-		attribute.String("dapr.conversation.name", args.Name),
+func (h *handler) converse(ctx context.Context, _ *mcp.CallToolRequest, args ConverseArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call := h.inst.Start(ctx, toolConverseWithLLM, packageName,
+		attribute.String(attrConversationName, args.Name),
 	)
+	defer call.End()
+
+	if res := call.Require(
+		toolkit.Field{Name: "name", Value: args.Name},
+		toolkit.Field{Name: "prompt", Value: args.Prompt},
+	); res != nil {
+		return res, nil, nil
+	}
 
 	contextID := args.ContextID
 	if contextID == "" {
-		newUUID, err := uuid.NewRandom()
+		id, err := h.newID()
 		if err != nil {
-			log.Printf("Failed to generate UUID: %v", err)
-			contextID = "default-session-id"
-		} else {
-			contextID = newUUID.String()
-			log.Printf("Generated new ContextID: %s", contextID)
+			return call.Fail(fmt.Errorf("generate conversation context ID: %w", err)), nil, nil
 		}
+		contextID = id.String()
 	}
 
-	var contextIDPtr *string
-	if contextID != "" {
-		contextIDPtr = &contextID
+	temperature := DefaultTemperature
+	if args.Temperature != nil {
+		temperature = *args.Temperature
 	}
-
-	temperature := args.Temperature
-	if temperature == 0.0 {
-		temperature = 0.7
-	}
-	temperaturePtr := &temperature
-
-	scrubPIIFalse := false
-	scrubPIIPtr := &scrubPIIFalse
-
-	messageContent := dapr.ConversationMessageAlpha2{
-		ConversationMessageOfUser: &dapr.ConversationMessageOfUserAlpha2{
-			Content: []*dapr.ConversationMessageContentAlpha2{{Text: &args.Prompt}},
-		},
-	}
-
-	inputs := []*dapr.ConversationInputAlpha2{
-		{
-			Messages: []*dapr.ConversationMessageAlpha2{&messageContent},
-		},
-	}
-
-	params := make(map[string]*anypb.Any)
-	metadata := make(map[string]string)
-	tools := make([]*dapr.ConversationToolsAlpha2, 0)
+	scrubPII := false
 	toolChoice := dapr.ToolChoiceNoneAlpha2
+	prompt := args.Prompt
 
-	converseReq := dapr.ConversationRequestAlpha2{
-		Name:        args.Name,
-		ContextID:   contextIDPtr,
-		Inputs:      inputs,
-		ScrubPII:    scrubPIIPtr,
-		Temperature: temperaturePtr,
-		Parameters:  params,
-		Metadata:    metadata,
-		Tools:       tools,
+	resp, err := h.client.ConverseAlpha2(ctx, dapr.ConversationRequestAlpha2{
+		Name:      args.Name,
+		ContextID: &contextID,
+		Inputs: []*dapr.ConversationInputAlpha2{{
+			Messages: []*dapr.ConversationMessageAlpha2{{
+				ConversationMessageOfUser: &dapr.ConversationMessageOfUserAlpha2{
+					Content: []*dapr.ConversationMessageContentAlpha2{{Text: &prompt}},
+				},
+			}},
+		}},
+		ScrubPII:    &scrubPII,
+		Temperature: &temperature,
 		ToolChoice:  &toolChoice,
-	}
-
-	resp, err := daprClient.ConverseAlpha2(ctx, converseReq)
+	})
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		if timer != nil {
-			timer.Stop("error", args.Name)
-		}
-		log.Printf("Dapr Converse failed: %v", err)
-		toolErrorMessage := fmt.Errorf("dapr API error while conversing with LLM '%s': %w", args.Name, err).Error()
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
-			IsError: true,
-		}, nil, nil
+		return call.Fail(fmt.Errorf("converse with LLM component %q: %w", args.Name, err)), nil, nil
 	}
-
-	if len(resp.Outputs) == 0 {
-		span.SetStatus(codes.Error, "empty outputs")
-		if timer != nil {
-			timer.Stop("error", args.Name)
-		}
-		toolErrorMessage := fmt.Sprintf("LLM '%s' returned an empty outputs list", args.Name)
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
-			IsError: true,
-		}, nil, nil
+	if resp == nil || len(resp.Outputs) == 0 || resp.Outputs[len(resp.Outputs)-1] == nil {
+		return call.Fail(fmt.Errorf("LLM component %q returned an empty outputs list", args.Name)), nil, nil
 	}
 	lastOutput := resp.Outputs[len(resp.Outputs)-1]
-
 	if len(lastOutput.Choices) == 0 {
-		span.SetStatus(codes.Error, "no choices")
-		if timer != nil {
-			timer.Stop("error", args.Name)
-		}
-		toolErrorMessage := fmt.Sprintf("LLM '%s' returned no choices in the last output", args.Name)
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: toolErrorMessage}},
-			IsError: true,
-		}, nil, nil
+		return call.Fail(fmt.Errorf("LLM component %q returned no choices in the last output", args.Name)), nil, nil
+	}
+	if resp.ContextID != "" {
+		contextID = resp.ContextID
 	}
 
-	span.SetStatus(codes.Ok, "")
-	if timer != nil {
-		timer.Stop("success", args.Name)
+	text, err := formatChoices(args.Name, contextID, lastOutput.Choices)
+	if err != nil {
+		return call.Fail(err), nil, nil
+	}
+	structured, err := structuredResponse(resp, contextID)
+	if err != nil {
+		return call.Fail(err), nil, nil
 	}
 
-	var result strings.Builder
-	fmt.Fprintf(&result,
-		"LLM Conversation completed successfully with component '%s'.\n",
-		args.Name,
-	)
-
-	for i, choice := range lastOutput.Choices {
-		if choice.Message == nil {
-			continue
-		}
-
-		fmt.Fprintf(&result, "\n--- Choice %d ---\n", i)
-
-		if len(choice.Message.ToolCalls) > 0 {
-			fmt.Fprintf(&result, "Status: **TOOL CALL** (Reason: %s)\n", choice.FinishReason)
-
-			toolCallsJson, _ := json.MarshalIndent(choice.Message.ToolCalls, "", "  ")
-			fmt.Fprintf(&result, "Tool Calls:\n%s\n", toolCallsJson)
-		}
-
-		if choice.Message.Content != "" {
-			fmt.Fprintf(&result, "Status: **MESSAGE** (Reason: %s)\n", choice.FinishReason)
-			fmt.Fprintf(&result, "Response Content:\n%s\n", choice.Message.Content)
-		}
-	}
-
-	finalMessage := result.String()
-	log.Println(finalMessage)
-
-	responseJSON, _ := json.Marshal(resp)
-
-	var structuredResult map[string]interface{}
-
-	if err := json.Unmarshal(responseJSON, &structuredResult); err != nil {
-		log.Printf("Warning: Failed to unmarshal response into structured map: %v", err)
-		structuredResult = nil
-	}
-
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: finalMessage}},
-	}, structuredResult, nil
+	call.Succeed("component", args.Name, "context_id", contextID, "choices", len(lastOutput.Choices))
+	return toolkit.TextResult(text), structured, nil
 }
 
-func RegisterTools(server *mcp.Server, client dapr.Client, metrics *telemetry.ToolMetrics) {
-	daprClient = &daprClientAdapter{client: client}
-	toolMetrics = metrics
+func formatChoices(component, contextID string, choices []*dapr.ConversationResultChoicesAlpha2) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "LLM Conversation completed successfully with component '%s'.\nContext ID: %s\n", component, contextID)
 
-	isDestructive := false
-	isReadOnly := true
-	isIdempotent := true
-	isOpenWorld := true
+	for i, choice := range choices {
+		if choice == nil || choice.Message == nil {
+			continue
+		}
+		fmt.Fprintf(&b, "\n--- Choice %d ---\n", i)
+
+		if len(choice.Message.ToolCalls) > 0 {
+			toolCalls, err := toolkit.MarshalIndent(choice.Message.ToolCalls)
+			if err != nil {
+				return "", fmt.Errorf("format tool calls: %w", err)
+			}
+			fmt.Fprintf(&b, "Status: **TOOL CALL** (Reason: %s)\n", choice.FinishReason)
+			fmt.Fprintf(&b, "Tool Calls:\n%s\n", toolCalls)
+		}
+		if choice.Message.Content != "" {
+			fmt.Fprintf(&b, "Status: **MESSAGE** (Reason: %s)\n", choice.FinishReason)
+			fmt.Fprintf(&b, "Response Content:\n%s\n", choice.Message.Content)
+		}
+	}
+	return b.String(), nil
+}
+
+func structuredResponse(resp *dapr.ConversationResponseAlpha2, contextID string) (map[string]any, error) {
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("encode LLM response: %w", err)
+	}
+	structured := map[string]any{}
+	if err := json.Unmarshal(raw, &structured); err != nil {
+		return nil, fmt.Errorf("decode LLM response: %w", err)
+	}
+	structured[resultKeyContextID] = contextID
+	return structured, nil
+}
+
+// RegisterTools registers the converse_with_llm tool on server.
+// metrics may be nil.
+func RegisterTools(server *mcp.Server, client dapr.Client, metrics *telemetry.ToolMetrics) {
+	registerTools(server, &daprClientAdapter{client: client}, metrics)
+}
+
+func registerTools(server *mcp.Server, client ConversationClient, metrics *telemetry.ToolMetrics) {
+	h := &handler{client: client, inst: toolkit.NewInstrumentation(metrics), newID: uuid.NewRandom}
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:  "converse_with_llm",
+		Name:  toolConverseWithLLM,
 		Title: "Delegate Task to External Reasoning Engine",
-		Description: "Delegates a single, immediate reasoning or text generation task to a secondary LLM component. The server handles complex message history formatting internally, accepting only the user's direct prompt, the component name, and an optional context ID for session continuity.\n\n" +
+		Description: "Delegates a single, immediate reasoning or text generation task to a secondary LLM component. **This is a READ-ONLY and IDEMPOTENT operation.** The server handles complex message history formatting internally, accepting only the user's direct prompt, the component name, and an optional context ID for session continuity.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `name` of the LLM component.\n" +
-			"2. For `Temperature`, use a value between 0.0 (deterministic) and 1.0 (creative). Default is 0.7.\n\n" +
+			"2. For `temperature`, use a value between 0.0 (deterministic) and 1.0 (creative). Default is 0.7.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide the Dapr component `name` and the user's `prompt`.\n" +
 			"2. **NEVER INVENT**: You must NOT invent the component `name`; it must be provided by the user or discovered via the `get_components` tool.\n" +
-			"3. **CONTEXT**: If provided, the `contextId` is used to maintain history. If omitted, a new session is started.",
-
-		Annotations: &mcp.ToolAnnotations{
-			DestructiveHint: &isDestructive,
-			ReadOnlyHint:    isReadOnly,
-			IdempotentHint:  isIdempotent,
-			OpenWorldHint:   &isOpenWorld,
-		},
-	}, converseTool)
+			"3. **CONTEXT**: If provided, the `contextId` is used to maintain history. If omitted, a new session is started. The result always carries the `context_id` to pass on the next call.",
+		Annotations: toolkit.ReadOnly.Annotations(true),
+	}, h.converse)
 }

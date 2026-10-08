@@ -1,8 +1,9 @@
-// Package telemetry provides OpenTelemetry initialization and configuration.
 package telemetry
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -10,35 +11,52 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Tool outcomes passed to Timer.Stop and recorded on ToolInvocation.Outcome.
+const (
+	OutcomeSuccess = "success"
+	OutcomeError   = "error"
+)
+
+const (
+	attrToolName    = "tool.name"
+	attrToolPackage = "tool.package"
+	attrOutcome     = "outcome"
+	attrErrorType   = "error.type"
+
+	errorTypeExecution = "execution_error"
+)
+
 // ToolMetrics provides metrics instrumentation for tool invocations.
+// A nil *ToolMetrics is valid and records nothing.
 type ToolMetrics struct {
 	invocations metric.Int64Counter
 	errors      metric.Int64Counter
 	duration    metric.Float64Histogram
 	inProgress  metric.Int64UpDownCounter
-	meter       metric.Meter
 }
 
-// NewToolMetrics creates a new ToolMetrics instance.
+// NewToolMetrics creates a new ToolMetrics instance on the global meter provider.
 func NewToolMetrics() (*ToolMetrics, error) {
-	meter := otel.Meter("dapr-mcp-server")
+	return newToolMetrics(otel.Meter(instrumentationName))
+}
 
+func newToolMetrics(meter metric.Meter) (*ToolMetrics, error) {
 	invocations, err := meter.Int64Counter(
 		"dapr-mcp-server.tool.invocations",
 		metric.WithDescription("Total number of tool invocations"),
 		metric.WithUnit("{invocation}"),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create tool invocations counter: %w", err)
 	}
 
-	errors, err := meter.Int64Counter(
+	errorCounter, err := meter.Int64Counter(
 		"dapr-mcp-server.tool.errors",
 		metric.WithDescription("Total number of failed tool invocations"),
 		metric.WithUnit("{error}"),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create tool errors counter: %w", err)
 	}
 
 	duration, err := meter.Float64Histogram(
@@ -47,7 +65,7 @@ func NewToolMetrics() (*ToolMetrics, error) {
 		metric.WithUnit("ms"),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create tool duration histogram: %w", err)
 	}
 
 	inProgress, err := meter.Int64UpDownCounter(
@@ -56,124 +74,123 @@ func NewToolMetrics() (*ToolMetrics, error) {
 		metric.WithUnit("{tool}"),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create tool in-progress counter: %w", err)
 	}
 
 	return &ToolMetrics{
 		invocations: invocations,
-		errors:      errors,
+		errors:      errorCounter,
 		duration:    duration,
 		inProgress:  inProgress,
-		meter:       meter,
 	}, nil
 }
 
 // ToolInvocation represents attributes for a tool invocation.
 type ToolInvocation struct {
-	ToolName      string
-	ToolPackage   string
-	ComponentType string
-	Outcome       string
+	ToolName    string
+	ToolPackage string
+	Outcome     string
+}
+
+// attrs returns the tool identity attributes, plus the outcome when set and
+// includeOutcome is true. Every attribute value is drawn from a bounded set,
+// so values an agent controls must never be added here.
+func (inv ToolInvocation) attrs(includeOutcome bool, extra ...attribute.KeyValue) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 4+len(extra))
+	attrs = append(attrs,
+		attribute.String(attrToolName, inv.ToolName),
+		attribute.String(attrToolPackage, inv.ToolPackage),
+	)
+	attrs = append(attrs, extra...)
+	if includeOutcome && inv.Outcome != "" {
+		attrs = append(attrs, attribute.String(attrOutcome, inv.Outcome))
+	}
+	return attrs
 }
 
 // RecordInvocation records a tool invocation with its attributes.
 func (m *ToolMetrics) RecordInvocation(ctx context.Context, inv ToolInvocation) {
-	attrs := []attribute.KeyValue{
-		attribute.String("tool.name", inv.ToolName),
-		attribute.String("tool.package", inv.ToolPackage),
+	if m == nil {
+		return
 	}
-	if inv.ComponentType != "" {
-		attrs = append(attrs, attribute.String("dapr.component.type", inv.ComponentType))
-	}
-	if inv.Outcome != "" {
-		attrs = append(attrs, attribute.String("outcome", inv.Outcome))
-	}
-
-	m.invocations.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.invocations.Add(ctx, 1, metric.WithAttributes(inv.attrs(true)...))
 }
 
 // RecordError records a tool error.
 func (m *ToolMetrics) RecordError(ctx context.Context, inv ToolInvocation, errorType string) {
-	attrs := []attribute.KeyValue{
-		attribute.String("tool.name", inv.ToolName),
-		attribute.String("tool.package", inv.ToolPackage),
-		attribute.String("error.type", errorType),
+	if m == nil {
+		return
 	}
-	if inv.ComponentType != "" {
-		attrs = append(attrs, attribute.String("dapr.component.type", inv.ComponentType))
-	}
-
-	m.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.errors.Add(ctx, 1, metric.WithAttributes(inv.attrs(false, attribute.String(attrErrorType, errorType))...))
 }
 
 // RecordDuration records tool execution duration.
 func (m *ToolMetrics) RecordDuration(ctx context.Context, inv ToolInvocation, durationMs float64) {
-	attrs := []attribute.KeyValue{
-		attribute.String("tool.name", inv.ToolName),
-		attribute.String("tool.package", inv.ToolPackage),
+	if m == nil {
+		return
 	}
-	if inv.ComponentType != "" {
-		attrs = append(attrs, attribute.String("dapr.component.type", inv.ComponentType))
-	}
-	if inv.Outcome != "" {
-		attrs = append(attrs, attribute.String("outcome", inv.Outcome))
-	}
-
-	m.duration.Record(ctx, durationMs, metric.WithAttributes(attrs...))
+	m.duration.Record(ctx, durationMs, metric.WithAttributes(inv.attrs(true)...))
 }
 
 // StartInProgress marks a tool as in-progress.
 func (m *ToolMetrics) StartInProgress(ctx context.Context, toolName, toolPackage string) {
-	attrs := []attribute.KeyValue{
-		attribute.String("tool.name", toolName),
-		attribute.String("tool.package", toolPackage),
+	if m == nil {
+		return
 	}
-	m.inProgress.Add(ctx, 1, metric.WithAttributes(attrs...))
+	inv := ToolInvocation{ToolName: toolName, ToolPackage: toolPackage}
+	m.inProgress.Add(ctx, 1, metric.WithAttributes(inv.attrs(false)...))
 }
 
 // EndInProgress marks a tool as completed.
 func (m *ToolMetrics) EndInProgress(ctx context.Context, toolName, toolPackage string) {
-	attrs := []attribute.KeyValue{
-		attribute.String("tool.name", toolName),
-		attribute.String("tool.package", toolPackage),
+	if m == nil {
+		return
 	}
-	m.inProgress.Add(ctx, -1, metric.WithAttributes(attrs...))
+	inv := ToolInvocation{ToolName: toolName, ToolPackage: toolPackage}
+	m.inProgress.Add(ctx, -1, metric.WithAttributes(inv.attrs(false)...))
 }
 
-// Timer is a helper for measuring duration.
+// Timer measures one tool execution. Only the first Stop records anything,
+// and a Timer from a nil *ToolMetrics is a usable no-op.
 type Timer struct {
 	start   time.Time
 	metrics *ToolMetrics
 	inv     ToolInvocation
 	ctx     context.Context
+	once    sync.Once
 }
 
-// StartTimer creates a new timer for measuring tool execution.
+// StartTimer marks the tool in progress and starts timing it.
+// The timer keeps ctx's values but not its cancellation,
+// so a canceled request still has its outcome recorded.
 func (m *ToolMetrics) StartTimer(ctx context.Context, toolName, toolPackage string) *Timer {
-	inv := ToolInvocation{
-		ToolName:    toolName,
-		ToolPackage: toolPackage,
-	}
+	ctx = context.WithoutCancel(ctx)
 	m.StartInProgress(ctx, toolName, toolPackage)
 	return &Timer{
 		start:   time.Now(),
 		metrics: m,
-		inv:     inv,
+		inv:     ToolInvocation{ToolName: toolName, ToolPackage: toolPackage},
 		ctx:     ctx,
 	}
 }
 
-// Stop stops the timer and records the duration.
-func (t *Timer) Stop(outcome string, componentType string) {
-	durationMs := float64(time.Since(t.start).Milliseconds())
-	t.inv.Outcome = outcome
-	t.inv.ComponentType = componentType
-
-	t.metrics.RecordInvocation(t.ctx, t.inv)
-	t.metrics.RecordDuration(t.ctx, t.inv, durationMs)
-	t.metrics.EndInProgress(t.ctx, t.inv.ToolName, t.inv.ToolPackage)
-
-	if outcome == "error" {
-		t.metrics.RecordError(t.ctx, t.inv, "execution_error")
+// Stop records the invocation, its duration and, for OutcomeError, an error.
+// Calls after the first are ignored.
+func (t *Timer) Stop(outcome string) {
+	if t == nil || t.metrics == nil {
+		return
 	}
+	t.once.Do(func() {
+		durationMs := float64(time.Since(t.start)) / float64(time.Millisecond)
+		inv := t.inv
+		inv.Outcome = outcome
+
+		t.metrics.RecordInvocation(t.ctx, inv)
+		t.metrics.RecordDuration(t.ctx, inv, durationMs)
+		t.metrics.EndInProgress(t.ctx, inv.ToolName, inv.ToolPackage)
+
+		if outcome == OutcomeError {
+			t.metrics.RecordError(t.ctx, inv, errorTypeExecution)
+		}
+	})
 }

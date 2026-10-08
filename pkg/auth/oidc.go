@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -15,20 +16,33 @@ type OIDCAuthenticator struct {
 	config   OIDCConfig
 }
 
-// NewOIDCAuthenticator creates a new OIDC authenticator.
+// NewOIDCAuthenticator creates a new OIDC authenticator that logs to slog.Default.
 func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (*OIDCAuthenticator, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+	return NewOIDCAuthenticatorWithLogger(ctx, cfg, nil)
+}
+
+// NewOIDCAuthenticatorWithLogger creates a new OIDC authenticator with a custom logger.
+// A nil logger means slog.Default.
+func NewOIDCAuthenticatorWithLogger(ctx context.Context, cfg OIDCConfig, logger *slog.Logger) (*OIDCAuthenticator, error) {
+	if logger == nil {
+		logger = slog.Default()
 	}
 
-	verifierConfig := &oidc.Config{
+	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("create OIDC provider: %w", err)
+	}
+
+	if cfg.SkipIssuerCheck {
+		logger.Warn("OIDC issuer check is disabled; tokens from any issuer signed by the provider's keys are accepted. Use only for development.",
+			"issuer_url", cfg.IssuerURL)
+	}
+
+	verifier := provider.Verifier(&oidc.Config{
 		ClientID:             cfg.ClientID,
 		SkipIssuerCheck:      cfg.SkipIssuerCheck,
 		SupportedSigningAlgs: cfg.AllowedAlgorithms,
-	}
-
-	verifier := provider.Verifier(verifierConfig)
+	})
 
 	return &OIDCAuthenticator{
 		provider: provider,
@@ -38,38 +52,39 @@ func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (*OIDCAuthenticat
 }
 
 // Authenticate validates an OIDC token and returns the identity.
+// Identity.Email is set only when the provider marks the address as verified.
 func (a *OIDCAuthenticator) Authenticate(ctx context.Context, token string) (*Identity, error) {
 	idToken, err := a.verifier.Verify(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
 	var claims struct {
-		Email         string   `json:"email"`
-		EmailVerified bool     `json:"email_verified"`
-		Name          string   `json:"name"`
-		Audience      []string `json:"aud"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
+		Name          string `json:"name"`
 	}
-
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, fmt.Errorf("failed to parse token claims: %w", err)
+		return nil, fmt.Errorf("%w: parse token claims: %w", ErrInvalidToken, err)
 	}
 
-	// Get all claims as a map
 	var allClaims map[string]interface{}
 	if err := idToken.Claims(&allClaims); err != nil {
-		allClaims = make(map[string]interface{})
+		return nil, fmt.Errorf("%w: parse token claims: %w", ErrInvalidToken, err)
 	}
 
-	return &Identity{
+	identity := &Identity{
 		Subject:    idToken.Subject,
 		Issuer:     idToken.Issuer,
 		Audience:   idToken.Audience,
-		Email:      claims.Email,
 		Name:       claims.Name,
 		Claims:     allClaims,
 		AuthMethod: ModeOIDC,
-	}, nil
+	}
+	if claims.EmailVerified {
+		identity.Email = claims.Email
+	}
+	return identity, nil
 }
 
 // Mode returns the authentication mode.

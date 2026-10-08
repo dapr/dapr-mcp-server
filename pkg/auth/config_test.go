@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func clearAuthEnvVars() {
@@ -27,6 +28,7 @@ func clearAuthEnvVars() {
 		"DAPR_SENTRY_JWKS_URL",
 		"DAPR_SENTRY_TRUST_DOMAIN",
 		"DAPR_SENTRY_AUDIENCE",
+		"DAPR_SENTRY_ISSUER",
 		"DAPR_SENTRY_TOKEN_HEADER",
 		"DAPR_SENTRY_JWKS_REFRESH_INTERVAL",
 	}
@@ -40,27 +42,20 @@ func TestDefaultConfig(t *testing.T) {
 
 	cfg := DefaultConfig()
 
-	assert.False(t, cfg.Enabled)
+	assert.False(t, cfg.Enabled())
 	assert.Equal(t, ModeDisabled, cfg.Mode)
-	assert.Contains(t, cfg.SkipPaths, "/livez")
-	assert.Contains(t, cfg.SkipPaths, "/readyz")
-	assert.Contains(t, cfg.SkipPaths, "/startupz")
 }
 
 func TestDefaultConfigWithEnvVars(t *testing.T) {
 	clearAuthEnvVars()
 
-	os.Setenv("AUTH_ENABLED", "true")
 	os.Setenv("AUTH_MODE", "oidc")
-	os.Setenv("AUTH_SKIP_PATHS", "/health,/metrics")
 	defer clearAuthEnvVars()
 
 	cfg := DefaultConfig()
 
-	assert.True(t, cfg.Enabled)
+	assert.True(t, cfg.Enabled())
 	assert.Equal(t, ModeOIDC, cfg.Mode)
-	assert.Contains(t, cfg.SkipPaths, "/health")
-	assert.Contains(t, cfg.SkipPaths, "/metrics")
 }
 
 func TestDefaultConfigAutoEnablesAuthMethod(t *testing.T) {
@@ -136,7 +131,8 @@ func TestDefaultConfigHybridModeReadsIndividualFlags(t *testing.T) {
 func TestDefaultOIDCConfig(t *testing.T) {
 	clearAuthEnvVars()
 
-	cfg := defaultOIDCConfig()
+	cfg, err := defaultOIDCConfig()
+	require.NoError(t, err)
 
 	assert.False(t, cfg.Enabled)
 	assert.Empty(t, cfg.IssuerURL)
@@ -156,7 +152,8 @@ func TestDefaultOIDCConfigWithEnvVars(t *testing.T) {
 	os.Setenv("OIDC_SKIP_ISSUER_CHECK", "true")
 	defer clearAuthEnvVars()
 
-	cfg := defaultOIDCConfig()
+	cfg, err := defaultOIDCConfig()
+	require.NoError(t, err)
 
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, "https://issuer.example.com", cfg.IssuerURL)
@@ -170,7 +167,8 @@ func TestDefaultOIDCConfigWithEnvVars(t *testing.T) {
 func TestDefaultSPIFFEConfig(t *testing.T) {
 	clearAuthEnvVars()
 
-	cfg := defaultSPIFFEConfig()
+	cfg, err := defaultSPIFFEConfig()
+	require.NoError(t, err)
 
 	assert.False(t, cfg.Enabled)
 	assert.Empty(t, cfg.TrustDomain)
@@ -189,7 +187,8 @@ func TestDefaultSPIFFEConfigWithEnvVars(t *testing.T) {
 	os.Setenv("SPIFFE_ALLOWED_CLIENTS", "spiffe://cluster.local/client1,spiffe://cluster.local/client2")
 	defer clearAuthEnvVars()
 
-	cfg := defaultSPIFFEConfig()
+	cfg, err := defaultSPIFFEConfig()
+	require.NoError(t, err)
 
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, "cluster.local", cfg.TrustDomain)
@@ -201,7 +200,8 @@ func TestDefaultSPIFFEConfigWithEnvVars(t *testing.T) {
 func TestDefaultDaprSentryConfig(t *testing.T) {
 	clearAuthEnvVars()
 
-	cfg := defaultDaprSentryConfig()
+	cfg, err := defaultDaprSentryConfig()
+	require.NoError(t, err)
 
 	assert.False(t, cfg.Enabled)
 	assert.Empty(t, cfg.JWKSUrl)
@@ -222,7 +222,8 @@ func TestDefaultDaprSentryConfigWithEnvVars(t *testing.T) {
 	os.Setenv("DAPR_SENTRY_JWKS_REFRESH_INTERVAL", "10m")
 	defer clearAuthEnvVars()
 
-	cfg := defaultDaprSentryConfig()
+	cfg, err := defaultDaprSentryConfig()
+	require.NoError(t, err)
 
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, "http://sentry:8080/jwks.json", cfg.JWKSUrl)
@@ -240,34 +241,32 @@ func TestConfigValidate(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name: "disabled auth is valid",
-			config: Config{
-				Enabled: false,
-			},
+			name:    "disabled auth is valid",
+			config:  Config{Mode: ModeDisabled},
 			wantErr: false,
 		},
 		{
-			name: "disabled mode is valid",
-			config: Config{
-				Enabled: true,
-				Mode:    ModeDisabled,
-			},
-			wantErr: false,
+			name:    "zero-value config fails closed",
+			config:  Config{},
+			wantErr: true,
+		},
+		{
+			name:    "unknown mode fails closed",
+			config:  Config{Mode: AuthMode("bogus")},
+			wantErr: true,
 		},
 		{
 			name: "oidc mode without oidc enabled",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeOIDC,
-				OIDC:    OIDCConfig{Enabled: false},
+				Mode: ModeOIDC,
+				OIDC: OIDCConfig{Enabled: false},
 			},
 			wantErr: true,
 		},
 		{
 			name: "oidc mode with valid config",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeOIDC,
+				Mode: ModeOIDC,
 				OIDC: OIDCConfig{
 					Enabled:   true,
 					IssuerURL: "https://issuer.example.com",
@@ -279,17 +278,15 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "spiffe mode without spiffe enabled",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeSPIFFE,
-				SPIFFE:  SPIFFEConfig{Enabled: false},
+				Mode:   ModeSPIFFE,
+				SPIFFE: SPIFFEConfig{Enabled: false},
 			},
 			wantErr: true,
 		},
 		{
 			name: "spiffe mode with valid config",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeSPIFFE,
+				Mode: ModeSPIFFE,
 				SPIFFE: SPIFFEConfig{
 					Enabled:     true,
 					TrustDomain: "cluster.local",
@@ -301,7 +298,6 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "dapr-sentry mode without dapr-sentry enabled",
 			config: Config{
-				Enabled:    true,
 				Mode:       ModeDaprSentry,
 				DaprSentry: DaprSentryConfig{Enabled: false},
 			},
@@ -310,12 +306,12 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "dapr-sentry mode with valid config",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeDaprSentry,
+				Mode: ModeDaprSentry,
 				DaprSentry: DaprSentryConfig{
 					Enabled:     true,
 					JWKSUrl:     "http://sentry/jwks.json",
 					TrustDomain: "public",
+					Audience:    "public",
 				},
 			},
 			wantErr: false,
@@ -323,7 +319,6 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "hybrid mode with no methods enabled",
 			config: Config{
-				Enabled:    true,
 				Mode:       ModeHybrid,
 				OIDC:       OIDCConfig{Enabled: false},
 				SPIFFE:     SPIFFEConfig{Enabled: false},
@@ -334,8 +329,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "hybrid mode with oidc enabled",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeHybrid,
+				Mode: ModeHybrid,
 				OIDC: OIDCConfig{
 					Enabled:   true,
 					IssuerURL: "https://issuer.example.com",
@@ -347,8 +341,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "hybrid mode with invalid oidc config",
 			config: Config{
-				Enabled: true,
-				Mode:    ModeHybrid,
+				Mode: ModeHybrid,
 				OIDC: OIDCConfig{
 					Enabled:   true,
 					IssuerURL: "", // Missing required field
@@ -360,8 +353,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "unknown mode",
 			config: Config{
-				Enabled: true,
-				Mode:    AuthMode("unknown"),
+				Mode: AuthMode("unknown"),
 			},
 			wantErr: true,
 		},
@@ -536,6 +528,7 @@ func TestDaprSentryConfigValidate(t *testing.T) {
 				Enabled:     true,
 				JWKSUrl:     "http://sentry/jwks.json",
 				TrustDomain: "public",
+				Audience:    "public",
 			},
 			wantErr: false,
 		},
@@ -557,35 +550,9 @@ func TestDaprSentryConfigValidate(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigSkipPathsSpaceTrimming(t *testing.T) {
-	clearAuthEnvVars()
-
-	os.Setenv("AUTH_SKIP_PATHS", " /path1 , /path2 , /path3 ")
-	defer clearAuthEnvVars()
-
-	cfg := DefaultConfig()
-
-	assert.Contains(t, cfg.SkipPaths, "/path1")
-	assert.Contains(t, cfg.SkipPaths, "/path2")
-	assert.Contains(t, cfg.SkipPaths, "/path3")
-}
-
-func TestDefaultDaprSentryConfigInvalidDuration(t *testing.T) {
-	clearAuthEnvVars()
-
-	os.Setenv("DAPR_SENTRY_JWKS_REFRESH_INTERVAL", "invalid")
-	defer clearAuthEnvVars()
-
-	cfg := defaultDaprSentryConfig()
-
-	// Should fall back to default
-	assert.Equal(t, 5*time.Minute, cfg.RefreshInterval)
-}
-
 func TestHybridModeWithMultipleMethodsEnabled(t *testing.T) {
 	config := Config{
-		Enabled: true,
-		Mode:    ModeHybrid,
+		Mode: ModeHybrid,
 		OIDC: OIDCConfig{
 			Enabled:   true,
 			IssuerURL: "https://issuer.example.com",
@@ -600,6 +567,7 @@ func TestHybridModeWithMultipleMethodsEnabled(t *testing.T) {
 			Enabled:     true,
 			JWKSUrl:     "http://sentry/jwks.json",
 			TrustDomain: "public",
+			Audience:    "public",
 		},
 	}
 

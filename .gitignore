@@ -39,3 +39,6 @@ keys/
 
 # Python
 .venv/
+
+# Built binary
+/dapr-mcp-server

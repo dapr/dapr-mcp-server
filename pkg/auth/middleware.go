@@ -8,6 +8,23 @@ import (
 	"strings"
 )
 
+const (
+	bearerScheme = "Bearer"
+	// tokenPreviewLength is how many leading token characters debug logs may show.
+	tokenPreviewLength = 20
+	redactedValue      = "[REDACTED]"
+)
+
+// sensitiveHeaders are request headers whose values are never logged.
+// Keys are canonical header names.
+var sensitiveHeaders = map[string]struct{}{
+	"Authorization":       {},
+	"Proxy-Authorization": {},
+	"Cookie":              {},
+	"Set-Cookie":          {},
+	"X-Api-Key":           {},
+}
+
 // Middleware provides HTTP authentication middleware.
 type Middleware struct {
 	authenticators []Authenticator
@@ -28,178 +45,134 @@ func NewMiddleware(cfg Config, authenticators []Authenticator, logger *slog.Logg
 }
 
 // Handler returns an HTTP middleware that authenticates requests.
+//
+// Every request it wraps is authenticated, with no path exemptions.
+// Health endpoints are registered outside this middleware instead.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m.logger.Debug("[AUTH] incoming request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"remote_addr", r.RemoteAddr,
-			"user_agent", r.UserAgent(),
-		)
+		m.logRequest(r)
 
-		// Log all headers for debugging
-		for name, values := range r.Header {
-			// Don't log the actual token value, just that the header exists
-			if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, m.config.DaprSentry.TokenHeader) {
-				m.logger.Debug("[AUTH] request header (token)",
-					"header", name,
-					"value_length", len(strings.Join(values, "")),
-					"present", len(values) > 0,
-				)
-			} else {
-				m.logger.Debug("[AUTH] request header",
-					"header", name,
-					"values", values,
-				)
-			}
-		}
-
-		// Check if path should skip authentication
-		if m.shouldSkip(r.URL.Path) {
-			m.logger.Debug("[AUTH] skipping authentication for path",
-				"path", r.URL.Path,
-				"skip_paths", m.config.SkipPaths,
-			)
+		if !m.config.Enabled() {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// If authentication is disabled, proceed without authentication
-		if !m.config.Enabled || m.config.Mode == ModeDisabled {
-			m.logger.Debug("[AUTH] authentication disabled, passing through",
-				"enabled", m.config.Enabled,
-				"mode", m.config.Mode,
-			)
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		m.logger.Debug("[AUTH] authentication required",
-			"mode", m.config.Mode,
-			"authenticator_count", len(m.authenticators),
-			"custom_token_header", m.config.DaprSentry.TokenHeader,
-		)
-
-		// Extract token from headers
 		token, headerUsed := m.extractTokenWithSource(r)
 		if token == "" {
-			m.logger.Debug("[AUTH] no authentication token found",
-				"path", r.URL.Path,
-				"checked_custom_header", m.config.DaprSentry.TokenHeader,
-				"checked_authorization", true,
-			)
+			m.logger.Debug("no authentication token found", "path", r.URL.Path)
 			http.Error(w, "Unauthorized: no token provided", http.StatusUnauthorized)
 			return
 		}
 
-		m.logger.Debug("[AUTH] token extracted",
+		m.logger.Debug("token extracted",
 			"header_used", headerUsed,
 			"token_length", len(token),
 			"token_prefix", safeTokenPrefix(token),
 		)
 
-		// Try each authenticator
 		var identity *Identity
 		var lastErr error
-
-		for i, auth := range m.authenticators {
-			m.logger.Debug("[AUTH] trying authenticator",
-				"index", i,
-				"mode", auth.Mode(),
-			)
-
+		for _, auth := range m.authenticators {
 			id, err := auth.Authenticate(r.Context(), token)
 			if err == nil {
 				identity = id
-				m.logger.Debug("[AUTH] authenticator succeeded",
-					"index", i,
-					"mode", auth.Mode(),
-					"subject", id.Subject,
-				)
 				break
 			}
-
-			m.logger.Debug("[AUTH] authenticator failed",
-				"index", i,
-				"mode", auth.Mode(),
-				"error", err.Error(),
-			)
+			m.logger.Debug("authenticator rejected token", "mode", auth.Mode(), "error", err)
 			lastErr = err
 		}
 
 		if identity == nil {
-			m.logger.Debug("[AUTH] all authenticators failed",
-				"path", r.URL.Path,
-				"last_error", lastErr,
-				"authenticator_count", len(m.authenticators),
-			)
+			m.logger.Debug("all authenticators failed", "path", r.URL.Path, "last_error", lastErr)
 			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
 			return
 		}
 
-		// Log successful authentication
-		m.logger.Debug("[AUTH] authentication successful",
+		m.logger.Debug("authentication successful",
 			"path", r.URL.Path,
 			"subject", identity.Subject,
 			"method", identity.AuthMethod,
-			"audience", identity.Audience,
 		)
 
-		// Add identity to context and continue
-		ctx := WithIdentity(r.Context(), identity)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 	})
 }
 
-// shouldSkip returns true if the path should skip authentication.
-func (m *Middleware) shouldSkip(path string) bool {
-	for _, skipPath := range m.config.SkipPaths {
-		if path == skipPath {
-			return true
-		}
-		// Support wildcard suffix
-		if strings.HasSuffix(skipPath, "*") {
-			prefix := strings.TrimSuffix(skipPath, "*")
-			if strings.HasPrefix(path, prefix) {
-				return true
-			}
-		}
+// logRequest logs the request line and headers at debug level, redacting credential headers.
+func (m *Middleware) logRequest(r *http.Request) {
+	if !m.logger.Enabled(r.Context(), slog.LevelDebug) {
+		return
 	}
-	return false
+	headers := make(map[string]any, len(r.Header))
+	for name, values := range r.Header {
+		if m.isSensitiveHeader(name) {
+			headers[name] = redactedValue
+			continue
+		}
+		headers[name] = values
+	}
+	m.logger.Debug("incoming request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+		"headers", headers,
+	)
+}
+
+// isSensitiveHeader reports whether a header may carry credentials, case-insensitively.
+func (m *Middleware) isSensitiveHeader(name string) bool {
+	if _, ok := sensitiveHeaders[http.CanonicalHeaderKey(name)]; ok {
+		return true
+	}
+	custom := m.config.DaprSentry.TokenHeader
+	return custom != "" && strings.EqualFold(name, custom)
 }
 
 // extractTokenWithSource extracts the token and returns which header it came from.
+//
+// The configured DaprSentry.TokenHeader is checked first for every auth mode,
+// and holds a raw token. When it is absent or empty the Authorization header is used,
+// as "Bearer <token>" or as a raw token.
 func (m *Middleware) extractTokenWithSource(r *http.Request) (token string, header string) {
-	// Check custom Dapr Sentry header first if configured and different from Authorization
-	if m.config.DaprSentry.TokenHeader != "" && m.config.DaprSentry.TokenHeader != "Authorization" {
-		if token := r.Header.Get(m.config.DaprSentry.TokenHeader); token != "" {
-			// Custom headers typically contain raw tokens without Bearer prefix
-			return token, m.config.DaprSentry.TokenHeader
+	custom := m.config.DaprSentry.TokenHeader
+	if custom != "" && !strings.EqualFold(custom, authorizationHeader) {
+		if v := strings.TrimSpace(r.Header.Get(custom)); v != "" {
+			if strings.ContainsAny(v, " \t") {
+				return "", ""
+			}
+			return v, custom
 		}
 	}
 
-	// Fall back to Authorization header
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
+	return parseAuthorization(r.Header.Get(authorizationHeader))
+}
+
+// parseAuthorization parses an Authorization header value as "Bearer <token>" or a raw token.
+// It returns an empty token for an empty bearer token, another scheme, or embedded whitespace.
+func parseAuthorization(value string) (token string, header string) {
+	if value == "" {
 		return "", ""
 	}
-
-	// Support "Bearer <token>" format
-	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		return strings.TrimPrefix(auth[7:], " "), "Authorization (Bearer)"
+	scheme, rest, found := strings.Cut(value, " ")
+	if !found {
+		if strings.EqualFold(scheme, bearerScheme) || strings.ContainsRune(scheme, '\t') {
+			return "", ""
+		}
+		return scheme, authorizationHeader + " (raw)"
 	}
-
-	// Also support raw token
-	return auth, "Authorization (raw)"
+	if !strings.EqualFold(scheme, bearerScheme) || rest == "" || strings.ContainsAny(rest, " \t") {
+		return "", ""
+	}
+	return rest, authorizationHeader + " (" + bearerScheme + ")"
 }
 
 // safeTokenPrefix returns the first few characters of a token for debugging
 // without exposing the full token.
 func safeTokenPrefix(token string) string {
-	if len(token) <= 20 {
+	if len(token) <= tokenPreviewLength {
 		return "[token too short to preview safely]"
 	}
-	return token[:20] + "..."
+	return token[:tokenPreviewLength] + "..."
 }
 
 // NoopMiddleware returns a middleware that does nothing (for disabled auth).

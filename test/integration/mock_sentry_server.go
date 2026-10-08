@@ -50,7 +50,6 @@ func main() {
 	fmt.Println("JWKS Endpoint: http://localhost:8200/.well-known/jwks.json")
 	fmt.Println()
 	fmt.Println("Environment variables for dapr-mcp-server:")
-	fmt.Println("  export AUTH_ENABLED=true")
 	fmt.Println("  export AUTH_MODE=dapr-sentry")
 	fmt.Println("  export DAPR_SENTRY_ENABLED=true")
 	fmt.Println("  export DAPR_SENTRY_JWKS_URL=http://localhost:8200/.well-known/jwks.json")

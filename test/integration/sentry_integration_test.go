@@ -15,10 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dapr/dapr-mcp-server/pkg/auth"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dapr/dapr-mcp-server/pkg/auth"
+	"github.com/dapr/dapr-mcp-server/test/mocks"
 )
 
 // TestDaprSentryIntegration tests the full authentication flow
@@ -100,9 +103,7 @@ func TestMiddlewareWithCustomHeader(t *testing.T) {
 
 	// Configure auth
 	cfg := auth.Config{
-		Enabled:   true,
-		Mode:      auth.ModeDaprSentry,
-		SkipPaths: []string{"/livez", "/readyz"},
+		Mode: auth.ModeDaprSentry,
 		DaprSentry: auth.DaprSentryConfig{
 			Enabled:         true,
 			JWKSUrl:         jwksServer.URL + "/jwks.json",
@@ -113,8 +114,10 @@ func TestMiddlewareWithCustomHeader(t *testing.T) {
 		},
 	}
 
+	require.NoError(t, cfg.Validate())
 	authenticator, err := auth.NewDaprSentryAuthenticator(context.Background(), cfg.DaprSentry)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = auth.CloseAuthenticators([]auth.Authenticator{authenticator}) })
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	middleware := auth.NewMiddleware(cfg, []auth.Authenticator{authenticator}, logger)
@@ -146,6 +149,40 @@ func TestMiddlewareWithCustomHeader(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "spiffe://public/ns/default/test-uuid")
+
+	// A validly signed token without exp must be rejected.
+	noExpiry := createSentryJWT(t, privateKey, "sentry-key-1", jwt.Claims{
+		Subject:  "spiffe://public/ns/default/test-uuid",
+		Audience: jwt.Audience{"public"},
+	})
+	req = httptest.NewRequest("GET", "/api/test", nil)
+	req.Header.Set("X-My-Auth", noExpiry)
+	rec = httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestMiddlewareWithMockAuthenticator checks the shared mock works without a Mode expectation.
+func TestMiddlewareWithMockAuthenticator(t *testing.T) {
+	mockAuth := new(mocks.MockAuthenticator)
+	mockAuth.On("Authenticate", mock.Anything, "bad-token").Return(nil, auth.ErrInvalidToken)
+
+	middleware := auth.NewMiddleware(auth.Config{Mode: auth.ModeOIDC}, []auth.Authenticator{mockAuth}, nil)
+	handler := middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, auth.AuthMode(""), mockAuth.Mode())
+	mockAuth.AssertExpectations(t)
 }
 
 func createSentryJWT(t *testing.T, privateKey *rsa.PrivateKey, keyID string, claims jwt.Claims) string {

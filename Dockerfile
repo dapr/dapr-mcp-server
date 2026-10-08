@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.26.5-alpine AS builder
+FROM golang:1.26.6-alpine AS builder
 
 # Install ca-certificates for HTTPS and git for modules
 RUN apk add --no-cache ca-certificates git
@@ -15,7 +15,7 @@ COPY . .
 
 # Build the binary
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o dapr-mcp-server \
     ./cmd/dapr-mcp-server

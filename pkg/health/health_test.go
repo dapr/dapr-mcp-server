@@ -30,21 +30,13 @@ func (m *mockDaprClient) GetMetadata(ctx context.Context) (*dapr.GetMetadataResp
 
 func TestNewHandler(t *testing.T) {
 	mockClient := new(mockDaprClient)
-	handler := NewHandler(mockClient, "v1.0.0")
+	handler := NewHandler(mockClient, "v1.0.0", nil)
 
 	assert.NotNil(t, handler)
 	assert.Equal(t, "v1.0.0", handler.version)
-	assert.True(t, handler.ready.Load())
-	assert.True(t, handler.startupDone.Load())
-}
-
-func TestNewChecker(t *testing.T) {
-	mockClient := new(mockDaprClient)
-	handler := NewChecker(mockClient, nil)
-
-	assert.NotNil(t, handler)
-	assert.True(t, handler.ready.Load())
-	assert.True(t, handler.startupDone.Load())
+	assert.NotNil(t, handler.logger, "nil logger should fall back to the default")
+	assert.False(t, handler.ready.Load(), "handler must not report ready before initialization")
+	assert.False(t, handler.startupDone.Load(), "handler must not report started before initialization")
 }
 
 func TestSetReady(t *testing.T) {
@@ -98,7 +90,7 @@ func TestLivenessHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := NewHandler(nil, tt.version)
+			handler := NewHandler(nil, tt.version, nil)
 
 			req := httptest.NewRequest(http.MethodGet, "/livez", nil)
 			rec := httptest.NewRecorder()
@@ -135,13 +127,22 @@ func TestReadinessHandler(t *testing.T) {
 			expectedHealth: StatusHealthy,
 		},
 		{
-			name:  "degraded when dapr unavailable",
+			name:  "unhealthy when dapr unavailable",
 			ready: true,
 			setupMock: func(m *mockDaprClient) {
 				m.On("GetMetadata", mock.Anything).Return(nil, errors.New("connection refused"))
 			},
-			expectedStatus: http.StatusOK,
-			expectedHealth: StatusDegraded,
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedHealth: StatusUnhealthy,
+		},
+		{
+			name:  "unhealthy when not ready and dapr unavailable",
+			ready: false,
+			setupMock: func(m *mockDaprClient) {
+				m.On("GetMetadata", mock.Anything).Return(nil, errors.New("connection refused"))
+			},
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedHealth: StatusUnhealthy,
 		},
 		{
 			name:           "unhealthy when not ready",
@@ -165,9 +166,9 @@ func TestReadinessHandler(t *testing.T) {
 			if tt.setupMock != nil {
 				mockClient := new(mockDaprClient)
 				tt.setupMock(mockClient)
-				handler = NewHandler(mockClient, "v1.0.0")
+				handler = NewHandler(mockClient, "v1.0.0", nil)
 			} else {
-				handler = NewHandler(nil, "v1.0.0")
+				handler = NewHandler(nil, "v1.0.0", nil)
 			}
 			handler.SetReady(tt.ready)
 
@@ -183,6 +184,7 @@ func TestReadinessHandler(t *testing.T) {
 			err := json.Unmarshal(rec.Body.Bytes(), &resp)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedHealth, resp.Status)
+			assert.NotContains(t, rec.Body.String(), "connection refused", "raw errors must not reach unauthenticated probes")
 		})
 	}
 }
@@ -210,7 +212,7 @@ func TestStartupHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := NewHandler(nil, "v1.0.0")
+			handler := NewHandler(nil, "v1.0.0", nil)
 			handler.SetStartupDone(tt.startupDone)
 
 			req := httptest.NewRequest(http.MethodGet, "/startupz", nil)
@@ -251,7 +253,7 @@ func TestCheckDapr(t *testing.T) {
 				m.On("GetMetadata", mock.Anything).Return(nil, errors.New("sidecar not ready"))
 			},
 			expectedStatus: StatusUnhealthy,
-			expectedMsg:    "sidecar not ready",
+			expectedMsg:    msgDaprUnreachable,
 		},
 		{
 			name:           "nil client",
@@ -276,13 +278,15 @@ func TestCheckDapr(t *testing.T) {
 
 			assert.Equal(t, tt.expectedStatus, result.Status)
 			assert.Equal(t, "dapr", result.Component)
-			assert.Contains(t, result.Message, tt.expectedMsg)
+			assert.Equal(t, tt.expectedMsg, result.Message)
 		})
 	}
 }
 
 func TestRegisterHandlers(t *testing.T) {
-	handler := NewHandler(nil, "v1.0.0")
+	handler := NewHandler(nil, "v1.0.0", nil)
+	handler.SetReady(true)
+	handler.SetStartupDone(true)
 	mux := http.NewServeMux()
 
 	handler.RegisterHandlers(mux)
@@ -343,7 +347,8 @@ func TestReadinessHandlerChecksContent(t *testing.T) {
 	mockClient := new(mockDaprClient)
 	mockClient.On("GetMetadata", mock.Anything).Return(&dapr.GetMetadataResponse{}, nil)
 
-	handler := NewHandler(mockClient, "v1.0.0")
+	handler := NewHandler(mockClient, "v1.0.0", nil)
+	handler.SetReady(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()

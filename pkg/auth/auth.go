@@ -4,6 +4,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 )
 
 // AuthMode represents the authentication mode.
@@ -22,14 +24,21 @@ const (
 	ModeDaprSentry AuthMode = "dapr-sentry"
 )
 
-// Common errors
+// Authentication errors. Authenticators wrap one of these so callers can classify failures with errors.Is.
 var (
-	ErrNoToken           = errors.New("no authentication token provided")
-	ErrInvalidToken      = errors.New("invalid authentication token")
-	ErrTokenExpired      = errors.New("authentication token expired")
-	ErrInvalidIssuer     = errors.New("invalid token issuer")
-	ErrInvalidAudience   = errors.New("invalid token audience")
-	ErrAuthDisabled      = errors.New("authentication is disabled")
+	// ErrNoToken is returned when a request carries no token.
+	ErrNoToken = errors.New("no authentication token provided")
+	// ErrInvalidToken is returned when a token is malformed, badly signed or fails claim checks.
+	ErrInvalidToken = errors.New("invalid authentication token")
+	// ErrTokenExpired is returned when a token's exp is in the past.
+	ErrTokenExpired = errors.New("authentication token expired")
+	// ErrInvalidIssuer is returned when a token comes from an unexpected issuer or trust domain.
+	ErrInvalidIssuer = errors.New("invalid token issuer")
+	// ErrInvalidAudience is returned when a token is not issued for this server.
+	ErrInvalidAudience = errors.New("invalid token audience")
+	// ErrAuthDisabled is returned when authentication is requested but disabled.
+	ErrAuthDisabled = errors.New("authentication is disabled")
+	// ErrUnsupportedMethod is returned when the configured auth mode is unknown or its method is not enabled.
 	ErrUnsupportedMethod = errors.New("unsupported authentication method")
 )
 
@@ -78,4 +87,18 @@ func GetIdentity(ctx context.Context) *Identity {
 // IsAuthenticated returns true if the context has an authenticated identity.
 func IsAuthenticated(ctx context.Context) bool {
 	return GetIdentity(ctx) != nil
+}
+
+// CloseAuthenticators closes every authenticator that implements io.Closer,
+// such as the SPIFFE authenticator's Workload API connection, and joins any errors.
+func CloseAuthenticators(authenticators []Authenticator) error {
+	var errs []error
+	for _, a := range authenticators {
+		if c, ok := a.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close %s authenticator: %w", a.Mode(), err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
