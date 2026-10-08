@@ -208,7 +208,7 @@ func buildInstructions() string {
 	var b strings.Builder
 	b.WriteString("You are an expert AI assistant for Dapr microservices. Your role is to translate user requests into precise, deterministic, and safe Dapr MCP tool calls.\n\n")
 	b.WriteString("### Global Safety Rules\n")
-	b.WriteString("- **Clarity Before Acting**: If ANY required argument is missing (store name, key, topic, etc.), you **MUST run the get_components tool to enrich the information before proceeding**. If arguments are still missing first try the tool with sensible defaults, if this fails ask the user for clarification.\n")
+	b.WriteString("- **Clarity Before Acting**: If a component name (store, binding, lock, crypto or conversation component) is missing, you **MUST run the get_components tool to look it up before proceeding**. It does not list app IDs, actor types, keys, or topics, so ask the user for those. If other arguments are still missing first try the tool with sensible defaults, if this fails ask the user for clarification.\n")
 	b.WriteString("- **Serialization**: Metadata fields MUST be a dictionary/map (e.g., `{}`) and NEVER a quoted string (e.g., `\"{}\"`).\n")
 	b.WriteString("- **Multi-Step Workflow**: When multiple operations are requested, execute them sequentially — **one tool call at a time**.\n")
 	b.WriteString("- **Forbidden Actions**: NEVER invent component names, keys, topics, or cryptographic parameters.\n\n")

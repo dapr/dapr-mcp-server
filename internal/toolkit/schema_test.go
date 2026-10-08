@@ -51,3 +51,22 @@ func TestDropNullTypeKeepsOtherUnions(t *testing.T) {
 
 	assert.Equal(t, []string{"string", "integer"}, schema.Properties["name"].Types)
 }
+
+type nestedItem struct {
+	Tags []string `json:"tags"`
+}
+
+type nestedArgs struct {
+	Items []nestedItem `json:"items"`
+}
+
+func TestInputSchemaDropsNestedNullTypes(t *testing.T) {
+	t.Parallel()
+
+	items := InputSchema[nestedArgs]().Properties["items"]
+	require.NotNil(t, items.Items)
+	tags := items.Items.Properties["tags"]
+	require.NotNil(t, tags)
+	assert.Equal(t, "array", tags.Type)
+	assert.Empty(t, tags.Types)
+}

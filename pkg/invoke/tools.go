@@ -180,7 +180,7 @@ func RegisterTools(server *mcp.Server, client InvokeClient, metrics *telemetry.T
 			"3. Use `metadata` to send HTTP headers to the target service.\n\n" +
 			"**ARGUMENT RULES:**\n" +
 			"1. **REQUIRED INPUTS**: You MUST provide non-empty values for `appID` and `method`.\n" +
-			"2. **NEVER INVENT**: You must NOT invent `appID` or `method` names; they must be provided by the user or discovered.\n" +
+			"2. **NEVER INVENT**: You must NOT invent `appID` or `method` names; they must be provided by the user.\n" +
 			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.\n\n" +
 			"**SECURITY WARNING**: This tool runs business logic in another service. Ensure user intent is clear and the operation is authorized.",
 		Annotations: toolkit.DestructiveWrite.Annotations(true),
