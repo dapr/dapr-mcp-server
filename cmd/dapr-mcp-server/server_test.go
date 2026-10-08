@@ -73,3 +73,26 @@ func TestRunStdioReturnsNilOnContextCancel(t *testing.T) {
 		t.Fatal("runStdio did not return after the context was canceled")
 	}
 }
+
+func TestNewMCPServerAdvertisesCapabilities(t *testing.T) {
+	t.Parallel()
+	server := newMCPServer("test instructions")
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = serverSession.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	caps := session.InitializeResult().Capabilities
+	assert.Equal(t, &mcp.ServerCapabilities{
+		Logging: &mcp.LoggingCapabilities{},
+		Tools:   &mcp.ToolCapabilities{ListChanged: true},
+	}, caps)
+	assert.Equal(t, "test instructions", session.InitializeResult().Instructions)
+}
