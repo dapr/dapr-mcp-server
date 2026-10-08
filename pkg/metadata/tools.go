@@ -115,8 +115,20 @@ func GetLiveComponentList(ctx context.Context, client MetadataClient) ([]Compone
 }
 
 type handler struct {
-	client MetadataClient
-	inst   toolkit.Instrumentation
+	client    MetadataClient
+	inst      toolkit.Instrumentation
+	observers []func([]ComponentInfo)
+}
+
+// Option configures the get_components tool.
+type Option func(*handler)
+
+// WithComponentsObserver calls observe with the component list each time get_components succeeds,
+// so the caller can react to components the sidecar has loaded or unloaded since the last call.
+func WithComponentsObserver(observe func([]ComponentInfo)) Option {
+	return func(h *handler) {
+		h.observers = append(h.observers, observe)
+	}
 }
 
 func (h *handler) getComponents(ctx context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, ComponentListWrapper, error) {
@@ -132,6 +144,10 @@ func (h *handler) getComponents(ctx context.Context, _ *mcp.CallToolRequest, _ a
 		return call.Fail(fmt.Errorf("fetch live Dapr component list: %w", err)), ComponentListWrapper{}, nil
 	}
 
+	for _, observe := range h.observers {
+		observe(components)
+	}
+
 	call.Succeed("components", len(components))
 	text := fmt.Sprintf("Successfully retrieved %d Dapr component(s). The details are returned in the structured result.", len(components))
 	return toolkit.TextResult(text), ComponentListWrapper{Components: components}, nil
@@ -139,8 +155,11 @@ func (h *handler) getComponents(ctx context.Context, _ *mcp.CallToolRequest, _ a
 
 // RegisterTools registers the get_components tool on server.
 // metrics may be nil.
-func RegisterTools(server *mcp.Server, client MetadataClient, metrics *telemetry.ToolMetrics) {
+func RegisterTools(server *mcp.Server, client MetadataClient, metrics *telemetry.ToolMetrics, opts ...Option) {
 	h := &handler{client: client, inst: toolkit.NewInstrumentation(metrics)}
+	for _, opt := range opts {
+		opt(h)
+	}
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        toolGetComponents,

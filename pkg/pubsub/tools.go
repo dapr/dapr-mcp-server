@@ -153,3 +153,8 @@ func RegisterTools(server *mcp.Server, client PubSubClient, metrics *telemetry.T
 		Annotations: toolkit.AdditiveWrite.Annotations(true),
 	}, h.publishEventWithMetadata)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolPublishEvent, toolPublishEventWithMetadata}
+}

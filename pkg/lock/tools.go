@@ -202,3 +202,8 @@ func RegisterTools(server *mcp.Server, client LockClient, metrics *telemetry.Too
 		Annotations: toolkit.AdditiveWrite.Annotations(true),
 	}, h.releaseLock)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolAcquireLock, toolReleaseLock}
+}

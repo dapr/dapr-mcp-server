@@ -194,3 +194,8 @@ func registerTools(server *mcp.Server, client ConversationClient, metrics *telem
 		Annotations: toolkit.ReadOnly.Annotations(true),
 	}, h.converse)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolConverseWithLLM}
+}

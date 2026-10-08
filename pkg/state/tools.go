@@ -247,3 +247,8 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Annotations: toolkit.DestructiveWrite.Annotations(true),
 	}, h.executeTransaction)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolSaveState, toolGetState, toolDeleteState, toolExecuteTransaction}
+}

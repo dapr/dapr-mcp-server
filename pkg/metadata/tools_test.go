@@ -207,6 +207,42 @@ func TestRegisterTools(t *testing.T) {
 	RegisterTools(server, mockClient, nil)
 }
 
+func TestComponentsObserver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		resp      *dapr.GetMetadataResponse
+		err       error
+		wantCalls int
+	}{
+		{
+			name:      "called with the components on success",
+			resp:      &dapr.GetMetadataResponse{RegisteredComponents: []*dapr.MetadataRegisteredComponents{{Name: "statestore", Type: "state.redis"}}},
+			wantCalls: 1,
+		},
+		{name: "not called when the sidecar fails", err: errors.New("sidecar unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mockClient := new(mocks.MockDaprClient)
+			mockClient.On("GetMetadata", mock.Anything).Return(tt.resp, tt.err)
+
+			var observed [][]ComponentInfo
+			h, _ := newTestHandler(mockClient)
+			WithComponentsObserver(func(c []ComponentInfo) { observed = append(observed, c) })(h)
+
+			_, _, err := h.getComponents(context.Background(), &mcp.CallToolRequest{}, nil)
+			require.NoError(t, err)
+			require.Len(t, observed, tt.wantCalls)
+			if tt.wantCalls > 0 {
+				assert.Equal(t, "statestore", observed[0][0].Name)
+			}
+		})
+	}
+}
+
 func newTestHandler(client MetadataClient) (*handler, *bytes.Buffer) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
