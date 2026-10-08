@@ -46,14 +46,22 @@ func connectSession(t *testing.T, server *mcp.Server) (*mcp.ClientSession, <-cha
 
 func sessionToolNames(t *testing.T, session *mcp.ClientSession) []string {
 	t.Helper()
-	result, err := session.ListTools(context.Background(), nil)
+	names, err := listSessionToolNames(session)
 	require.NoError(t, err)
+	return names
+}
+
+func listSessionToolNames(session *mcp.ClientSession) ([]string, error) {
+	result, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
 	names := make([]string, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	return names
+	return names, nil
 }
 
 func newSyncedServer(t *testing.T, client *testDaprClient) (*mcp.Server, *toolSyncer) {
@@ -146,7 +154,10 @@ func TestToolSyncerRun(t *testing.T) {
 	}()
 
 	want := sortedConcat(coreTools, cryptoTools)
-	assert.Eventually(t, func() bool { return slices.Equal(want, sessionToolNames(t, session)) }, syncWait, syncTick)
+	assert.Eventually(t, func() bool {
+		got, err := listSessionToolNames(session)
+		return err == nil && slices.Equal(want, got)
+	}, syncWait, syncTick)
 
 	cancel()
 	select {

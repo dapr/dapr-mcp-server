@@ -29,6 +29,8 @@ const (
 	// It takes a Go duration, and 0 turns the periodic refresh off.
 	toolRefreshIntervalEnv     = "DAPR_MCP_TOOL_REFRESH_INTERVAL"
 	defaultToolRefreshInterval = 30 * time.Second
+	// toolRefreshTimeout bounds one periodic refresh so a hung sidecar call cannot stall the loop.
+	toolRefreshTimeout = 10 * time.Second
 )
 
 // errInvalidToolRefreshInterval reports a DAPR_MCP_TOOL_REFRESH_INTERVAL that is not a non-negative duration.
@@ -153,16 +155,30 @@ func (s *toolSyncer) apply(components []metadata.ComponentInfo) {
 
 // run refreshes the tools every interval until ctx is done.
 // A failed refresh keeps the current tools and is retried on the next tick.
+// Only the first failure of a run of failures is logged at warn level, to avoid
+// a log line every interval while the sidecar is down.
 func (s *toolSyncer) run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	failing := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.refresh(ctx); err != nil && ctx.Err() == nil {
+			refreshCtx, cancel := context.WithTimeout(ctx, toolRefreshTimeout)
+			err := s.refresh(refreshCtx)
+			cancel()
+			switch {
+			case err == nil:
+				failing = false
+			case ctx.Err() != nil:
+				return
+			case !failing:
+				failing = true
 				s.logger.Warn("Failed to refresh tools from Dapr components, keeping current tools", "error", err)
+			default:
+				s.logger.Debug("Tool refresh still failing, keeping current tools", "error", err)
 			}
 		}
 	}
