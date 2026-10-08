@@ -126,6 +126,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("OpenTelemetry initialized successfully")
 	}
 
+	refreshInterval, err := toolRefreshInterval(os.Getenv(toolRefreshIntervalEnv))
+	if err != nil {
+		return err
+	}
+
 	toolMetrics, err := telemetry.NewToolMetrics()
 	if err != nil {
 		logger.Warn("Failed to initialize tool metrics, tool calls will run without metrics", "error", err)
@@ -149,8 +154,14 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	healthChecker := health.NewHandler(daprClient, Version, logger)
 
-	if err = registerTools(ctx, server, daprClient, toolMetrics, logger); err != nil {
+	syncer, err := registerTools(ctx, server, daprClient, toolMetrics, logger)
+	if err != nil {
 		return fmt.Errorf("register tools: %w", err)
+	}
+	if refreshInterval > 0 {
+		syncCtx, stopSync := context.WithCancel(ctx)
+		defer stopSync()
+		go syncer.run(syncCtx, refreshInterval)
 	}
 	healthChecker.SetStartupDone(true)
 	healthChecker.SetReady(true)
