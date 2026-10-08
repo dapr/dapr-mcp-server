@@ -234,8 +234,9 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Annotations: toolkit.DestructiveIdempotent.Annotations(true),
 	}, h.deleteState)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:  toolExecuteTransaction,
-		Title: "Execute Atomic State Transaction",
+		Name:        toolExecuteTransaction,
+		Title:       "Execute Atomic State Transaction",
+		InputSchema: toolkit.InputSchema[ExecuteTransactionArgs](),
 		Description: "Executes multiple save and/or delete operations atomically (all or nothing) on state stores that support transactions. **This is a complex, high-impact DESTRUCTIVE SIDE-EFFECT action that is NOT IDEMPOTENT.** Use only for batch updates or when strict data consistency is required across multiple keys.\n\n" +
 			"**GUIDANCE:**\n" +
 			"1. Use `get_components` to find the `storeName` of the state store.\n" +
