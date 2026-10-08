@@ -145,10 +145,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	instructions := buildInstructions()
 	logger.Debug("Server instructions configured", "instructions", instructions)
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
-		Instructions: instructions,
-		HasTools:     true,
-	})
+	server := newMCPServer(instructions)
 
 	healthChecker := health.NewHandler(daprClient, Version, logger)
 
@@ -400,4 +397,16 @@ func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logg
 
 	logger.Info("Authenticators initialized", "count", len(authenticators))
 	return authenticators, nil
+}
+
+// newMCPServer builds the MCP server, advertising the logging and tools
+// capabilities (with list-changed notifications) regardless of which tools register.
+func newMCPServer(instructions string) *mcp.Server {
+	return mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
+		Instructions: instructions,
+		Capabilities: &mcp.ServerCapabilities{
+			Logging: &mcp.LoggingCapabilities{},
+			Tools:   &mcp.ToolCapabilities{ListChanged: true},
+		},
+	})
 }
