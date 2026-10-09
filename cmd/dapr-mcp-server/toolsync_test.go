@@ -13,10 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	syncWait = 2 * time.Second
-	syncTick = 10 * time.Millisecond
-)
+// syncWait bounds how long a test waits for the tool list changed notification.
+const syncWait = 2 * time.Second
 
 // connectSession connects a long-lived in-memory client to server and signals on the
 // returned channel each time the server reports that its tool list changed.
@@ -46,22 +44,14 @@ func connectSession(t *testing.T, server *mcp.Server) (*mcp.ClientSession, <-cha
 
 func sessionToolNames(t *testing.T, session *mcp.ClientSession) []string {
 	t.Helper()
-	names, err := listSessionToolNames(session)
-	require.NoError(t, err)
-	return names
-}
-
-func listSessionToolNames(session *mcp.ClientSession) ([]string, error) {
 	result, err := session.ListTools(context.Background(), nil)
-	if err != nil {
-		return nil, err
-	}
+	require.NoError(t, err)
 	names := make([]string, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	return names, nil
+	return names
 }
 
 func newSyncedServer(t *testing.T, client *testDaprClient) (*mcp.Server, *toolSyncer) {
@@ -85,42 +75,35 @@ func TestToolNamesMatchRegisteredTools(t *testing.T) {
 	}
 }
 
-func TestToolSyncerRefreshAddsAndRemovesTools(t *testing.T) {
+func TestListToolsSyncsTools(t *testing.T) {
 	client := newTestDaprClient()
 	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes(), nil).Once()
 	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("state.redis", "state.postgresql"), nil).Once()
-	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("pubsub.redis"), nil).Once()
-	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("pubsub.redis"), nil).Once()
+	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("pubsub.redis"), nil)
 
-	server, syncer := newSyncedServer(t, client)
+	server, _ := newSyncedServer(t, client)
 	session, changed := connectSession(t, server)
-	assert.Equal(t, coreTools, sessionToolNames(t, session))
 
-	require.NoError(t, syncer.refresh(context.Background()))
-	assert.Equal(t, sortedConcat(coreTools, stateTools), sessionToolNames(t, session))
+	assert.Equal(t, sortedConcat(coreTools, stateTools), sessionToolNames(t, session), "a state store hot-reloaded after startup")
 	select {
 	case <-changed:
 	case <-time.After(syncWait):
 		t.Fatal("client was not told the tool list changed")
 	}
 
-	require.NoError(t, syncer.refresh(context.Background()))
 	assert.Equal(t, sortedConcat(coreTools, pubsubTools), sessionToolNames(t, session), "state tools go when the last state store does")
-
-	require.NoError(t, syncer.refresh(context.Background()))
 	assert.Equal(t, sortedConcat(coreTools, pubsubTools), sessionToolNames(t, session), "an unchanged component list changes nothing")
 }
 
-func TestToolSyncerRefreshErrorKeepsTools(t *testing.T) {
-	sidecarErr := errors.New("sidecar unavailable")
+func TestListToolsSyncErrorKeepsTools(t *testing.T) {
 	client := newTestDaprClient()
 	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("state.redis"), nil).Once()
-	client.On("GetMetadata", mock.Anything).Return(nil, sidecarErr).Once()
+	client.On("GetMetadata", mock.Anything).Return(nil, errors.New("sidecar unavailable"))
 
-	server, syncer := newSyncedServer(t, client)
+	server, _ := newSyncedServer(t, client)
+	session, _ := connectSession(t, server)
 
-	require.ErrorIs(t, syncer.refresh(context.Background()), sidecarErr)
-	assert.Equal(t, sortedConcat(coreTools, stateTools), listToolNames(t, server))
+	assert.Equal(t, sortedConcat(coreTools, stateTools), sessionToolNames(t, session))
 }
 
 func TestGetComponentsSyncsTools(t *testing.T) {
@@ -128,71 +111,14 @@ func TestGetComponentsSyncsTools(t *testing.T) {
 	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes(), nil).Once()
 	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("lock.redis"), nil).Once()
 
-	server, _ := newSyncedServer(t, client)
+	server, syncer := newSyncedServer(t, client)
 	session, _ := connectSession(t, server)
 
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_components"})
 	require.NoError(t, err)
 	require.False(t, result.IsError)
 
-	assert.Equal(t, sortedConcat(coreTools, lockTools), sessionToolNames(t, session))
-}
-
-func TestToolSyncerRun(t *testing.T) {
-	client := newTestDaprClient()
-	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes(), nil).Once()
-	client.On("GetMetadata", mock.Anything).Return(metadataWithTypes("crypto.dapr.localstorage"), nil)
-
-	server, syncer := newSyncedServer(t, client)
-	session, _ := connectSession(t, server)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		syncer.run(ctx, syncTick)
-		close(done)
-	}()
-
-	want := sortedConcat(coreTools, cryptoTools)
-	assert.Eventually(t, func() bool {
-		got, err := listSessionToolNames(session)
-		return err == nil && slices.Equal(want, got)
-	}, syncWait, syncTick)
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(syncWait):
-		t.Fatal("run did not return after its context was canceled")
-	}
-}
-
-func TestToolRefreshInterval(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		value   string
-		want    time.Duration
-		wantErr bool
-	}{
-		{name: "unset uses the default", value: "", want: defaultToolRefreshInterval},
-		{name: "duration", value: "5s", want: 5 * time.Second},
-		{name: "zero disables", value: "0", want: 0},
-		{name: "negative", value: "-1s", wantErr: true},
-		{name: "not a duration", value: "often", wantErr: true},
-		{name: "bare number", value: "30", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := toolRefreshInterval(tt.value)
-			if tt.wantErr {
-				require.ErrorIs(t, err, errInvalidToolRefreshInterval)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	assert.Equal(t, map[buildingBlock]bool{blockLock: true}, syncer.registered)
 }

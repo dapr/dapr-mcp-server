@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -25,29 +24,12 @@ import (
 )
 
 const (
-	// toolRefreshIntervalEnv sets how often the tools are re-synced with the sidecar's components.
-	// It takes a Go duration, and 0 turns the periodic refresh off.
-	toolRefreshIntervalEnv     = "DAPR_MCP_TOOL_REFRESH_INTERVAL"
-	defaultToolRefreshInterval = 30 * time.Second
-	// toolRefreshTimeout bounds one periodic refresh so a hung sidecar call cannot stall the loop.
-	toolRefreshTimeout = 10 * time.Second
+	// methodListTools is the MCP method a client calls to list the server's tools.
+	methodListTools = "tools/list"
+	// toolSyncTimeout bounds the sidecar call made before answering tools/list,
+	// so a hung sidecar delays a tool listing by at most this long.
+	toolSyncTimeout = 5 * time.Second
 )
-
-// errInvalidToolRefreshInterval reports a DAPR_MCP_TOOL_REFRESH_INTERVAL that is not a non-negative duration.
-var errInvalidToolRefreshInterval = errors.New("invalid " + toolRefreshIntervalEnv)
-
-// toolRefreshInterval parses the value of DAPR_MCP_TOOL_REFRESH_INTERVAL,
-// returning the default when it is empty.
-func toolRefreshInterval(value string) (time.Duration, error) {
-	if value == "" {
-		return defaultToolRefreshInterval, nil
-	}
-	interval, err := time.ParseDuration(value)
-	if err != nil || interval < 0 {
-		return 0, fmt.Errorf("%w: %q must be a non-negative duration such as 30s, or 0 to disable", errInvalidToolRefreshInterval, value)
-	}
-	return interval, nil
-}
 
 // blockTools registers and names the tools of one building block.
 type blockTools struct {
@@ -101,7 +83,8 @@ type toolSyncer struct {
 
 // registerTools registers the core tools and the tools of each building block
 // that has at least one component loaded in the sidecar.
-// The returned syncer updates the building-block tools as components change.
+// The returned syncer updates the building-block tools as components change:
+// before every tools/list request and after every successful get_components call.
 func registerTools(ctx context.Context, server *mcp.Server, client dapr.Client, toolMetrics *telemetry.ToolMetrics, logger *slog.Logger) (*toolSyncer, error) {
 	syncer := &toolSyncer{
 		server:     server,
@@ -111,6 +94,7 @@ func registerTools(ctx context.Context, server *mcp.Server, client dapr.Client, 
 		registered: make(map[buildingBlock]bool),
 	}
 
+	server.AddReceivingMiddleware(syncer.syncOnListTools)
 	metadata.RegisterTools(server, client, toolMetrics, metadata.WithComponentsObserver(syncer.apply))
 	invoke.RegisterTools(server, client, toolMetrics)
 	actor.RegisterTools(server, client, toolMetrics)
@@ -153,33 +137,19 @@ func (s *toolSyncer) apply(components []metadata.ComponentInfo) {
 	}
 }
 
-// run refreshes the tools every interval until ctx is done.
-// A failed refresh keeps the current tools and is retried on the next tick.
-// Only the first failure of a run of failures is logged at warn level, to avoid
-// a log line every interval while the sidecar is down.
-func (s *toolSyncer) run(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	failing := false
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			refreshCtx, cancel := context.WithTimeout(ctx, toolRefreshTimeout)
-			err := s.refresh(refreshCtx)
+// syncOnListTools re-syncs the tools with the sidecar's components before answering tools/list,
+// so a client listing tools sees the components Dapr has hot-reloaded since the last sync.
+// A failed sync is logged and the current tools are listed.
+func (s *toolSyncer) syncOnListTools(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method == methodListTools {
+			syncCtx, cancel := context.WithTimeout(ctx, toolSyncTimeout)
+			err := s.refresh(syncCtx)
 			cancel()
-			switch {
-			case err == nil:
-				failing = false
-			case ctx.Err() != nil:
-				return
-			case !failing:
-				failing = true
-				s.logger.Warn("Failed to refresh tools from Dapr components, keeping current tools", "error", err)
-			default:
-				s.logger.Debug("Tool refresh still failing, keeping current tools", "error", err)
+			if err != nil {
+				s.logger.Warn("Failed to sync tools with Dapr components, listing current tools", "error", err)
 			}
 		}
+		return next(ctx, method, req)
 	}
 }

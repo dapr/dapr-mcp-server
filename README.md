@@ -56,7 +56,6 @@ Settings specific to the HTTP transport:
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `DAPR_MCP_CORS_ORIGIN` | unset (no CORS headers) | Origin allowed to call the server from a browser, for example `https://app.example.com`. Set it only when a browser-based MCP client on another origin needs access. |
-| `DAPR_MCP_TOOL_REFRESH_INTERVAL` | `30s` | How often the server checks the sidecar for added or removed components and updates its tools. Takes a Go duration; `0` turns the periodic check off, and the tools then update only when `get_components` is called. |
 
 ## Documentation
 
@@ -73,7 +72,7 @@ AI coding agents contributing to this repo: see [AGENTS.md](./AGENTS.md). For hu
 
 ## Tools at a glance
 
-All tools, with links to their entries in the [tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/). Core tools are always registered; conditional tools register only when a matching Dapr component exists. The server follows components that Dapr hot-reloads, adding a building block's tools when its first component appears and removing them when its last one goes, and tells connected clients the tool list changed.
+All tools, with links to their entries in the [tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/). Core tools are always registered; conditional tools register only when a matching Dapr component exists. The server follows components that Dapr hot-reloads: each time a client lists tools or calls `get_components`, it checks the sidecar, adds a building block's tools when its first component appears and removes them when its last one goes, and tells connected clients the tool list changed.
 
 | Category | Tool | Registration | Notes |
 | --- | --- | --- | --- |
