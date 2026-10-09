@@ -137,16 +137,23 @@ func (s *toolSyncer) apply(components []metadata.ComponentInfo) {
 	}
 }
 
+// isFirstPage reports whether req is not a follow-up page of a paginated list,
+// so a client paging through the tools triggers one sync rather than one per page.
+func isFirstPage(req mcp.Request) bool {
+	params, ok := req.GetParams().(*mcp.ListToolsParams)
+	return !ok || params == nil || params.Cursor == ""
+}
+
 // syncOnListTools re-syncs the tools with the sidecar's components before answering tools/list,
 // so a client listing tools sees the components Dapr has hot-reloaded since the last sync.
 // A failed sync is logged and the current tools are listed.
 func (s *toolSyncer) syncOnListTools(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		if method == methodListTools {
+		if method == methodListTools && isFirstPage(req) {
 			syncCtx, cancel := context.WithTimeout(ctx, toolSyncTimeout)
 			err := s.refresh(syncCtx)
 			cancel()
-			if err != nil {
+			if err != nil && ctx.Err() == nil {
 				s.logger.Warn("Failed to sync tools with Dapr components, listing current tools", "error", err)
 			}
 		}
