@@ -46,7 +46,7 @@ Tools live per capability under `pkg/<capability>/`. Pattern:
 2. Write table-driven tests in `pkg/<capability>/tools_test.go` using the `mocks/` stubs.
 3. Wire into `cmd/dapr-mcp-server/main.go`:
    - If the tool is **core** (always registered), add an unconditional call at the top of `registerTools` alongside `metadata.RegisterTools`, `invoke.RegisterTools`, `actor.RegisterTools`.
-   - If the tool is **conditional on a Dapr component**, extend the component-presence `switch` and the conditional registration block in `registerTools`. Use the Dapr component type prefix (e.g. `state.`, `pubsub.`, `lock.`).
+   - If the tool is **conditional on a Dapr component**, add the building block to `componentPrefixes` in `components.go` (with its Dapr component type prefix, e.g. `state.`, `pubsub.`, `lock.`) and to `toolsByBlock` in `toolsync.go`, and export a `ToolNames()` from the package so the tools can be removed again.
 4. Update tool metadata and documentation:
    - Add the tool row to the README's status table.
    - Add a section to the dapr/docs tool reference.

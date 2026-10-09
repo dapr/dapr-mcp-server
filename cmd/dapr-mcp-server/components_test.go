@@ -168,7 +168,8 @@ func TestRegisterTools(t *testing.T) {
 			client.On("GetMetadata", mock.Anything).Return(metadataWithTypes(tt.types...), nil)
 			server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0.0.0"}, nil)
 
-			require.NoError(t, registerTools(context.Background(), server, client, nil, discardLogger()))
+			_, err := registerTools(context.Background(), server, client, nil, discardLogger())
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, listToolNames(t, server))
 		})
 	}
@@ -183,7 +184,8 @@ func TestToolInputSchemasAreNotNullable(t *testing.T) {
 		"lock.redis", "conversation.echo", "crypto.dapr.localstorage",
 	), nil)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0.0.0"}, nil)
-	require.NoError(t, registerTools(context.Background(), server, client, nil, discardLogger()))
+	_, err := registerTools(context.Background(), server, client, nil, discardLogger())
+	require.NoError(t, err)
 
 	for _, tool := range listTools(t, server) {
 		schema, err := json.Marshal(tool.InputSchema)
@@ -198,7 +200,7 @@ func TestRegisterToolsMetadataError(t *testing.T) {
 	client.On("GetMetadata", mock.Anything).Return(nil, sidecarErr)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0.0.0"}, nil)
 
-	err := registerTools(context.Background(), server, client, nil, discardLogger())
+	_, err := registerTools(context.Background(), server, client, nil, discardLogger())
 	require.ErrorIs(t, err, sidecarErr)
 	assert.Equal(t, coreTools, listToolNames(t, server), "core tools register before component discovery")
 }

@@ -190,3 +190,8 @@ func RegisterTools(server *mcp.Server, client CryptoClient, metrics *telemetry.T
 		Annotations: toolkit.ReadOnly.Annotations(true),
 	}, h.decrypt)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolEncryptData, toolDecryptData}
+}

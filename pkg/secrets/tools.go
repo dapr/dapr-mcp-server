@@ -144,3 +144,8 @@ func RegisterTools(server *mcp.Server, client SecretsClient, metrics *telemetry.
 		Annotations: toolkit.ReadOnly.Annotations(true),
 	}, h.getBulkSecrets)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolGetSecret, toolGetBulkSecrets}
+}

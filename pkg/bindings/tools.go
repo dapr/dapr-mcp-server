@@ -105,3 +105,8 @@ func RegisterTools(server *mcp.Server, client BindingsClient, metrics *telemetry
 		Annotations: toolkit.DestructiveWrite.Annotations(true),
 	}, h.invokeOutputBinding)
 }
+
+// ToolNames returns the names of the tools RegisterTools adds.
+func ToolNames() []string {
+	return []string{toolInvokeOutputBinding}
+}

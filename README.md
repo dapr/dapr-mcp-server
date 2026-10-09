@@ -72,7 +72,7 @@ AI coding agents contributing to this repo: see [AGENTS.md](./AGENTS.md). For hu
 
 ## Tools at a glance
 
-All tools, with links to their entries in the [tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/). Core tools are always registered; conditional tools register only when a matching Dapr component exists.
+All tools, with links to their entries in the [tool reference](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/). Core tools are always registered; conditional tools register only when a matching Dapr component exists. The server follows components that Dapr hot-reloads: each time a client lists tools or calls `get_components`, it checks the sidecar, adds a building block's tools when its first component appears and removes them when its last one goes, and tells connected clients the tool list changed.
 
 | Category | Tool | Registration | Notes |
 | --- | --- | --- | --- |
