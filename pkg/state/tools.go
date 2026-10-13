@@ -18,11 +18,13 @@ const (
 
 	toolSaveState          = "save_state"
 	toolGetState           = "get_state"
+	toolGetBulkState       = "get_bulk_state"
 	toolDeleteState        = "delete_state"
 	toolExecuteTransaction = "execute_transaction"
 
 	attrStateKey        = "dapr.state.key"
 	attrOperationsCount = "dapr.operations_count"
+	attrKeysCount       = "dapr.state.keys_count"
 )
 
 // StateClient defines the interface for state operations.
@@ -30,6 +32,7 @@ const (
 type StateClient interface {
 	SaveState(ctx context.Context, storeName, key string, data []byte, meta map[string]string, so ...dapr.StateOption) error
 	GetState(ctx context.Context, storeName, key string, meta map[string]string) (*dapr.StateItem, error)
+	GetBulkState(ctx context.Context, storeName string, keys []string, meta map[string]string, parallelism int32) ([]*dapr.BulkStateItem, error)
 	DeleteState(ctx context.Context, storeName, key string, meta map[string]string) error
 	ExecuteStateTransaction(ctx context.Context, storeName string, meta map[string]string, ops []*dapr.StateOperation) error
 }
@@ -45,6 +48,22 @@ type SaveStateArgs struct {
 type GetStateArgs struct {
 	StoreName string `json:"storeName" jsonschema:"The name of the Dapr state store component (e.g., 'statestore')."`
 	Key       string `json:"key" jsonschema:"The key whose value should be retrieved."`
+}
+
+// GetBulkStateArgs are the arguments of the get_bulk_state tool.
+type GetBulkStateArgs struct {
+	StoreName   string   `json:"storeName" jsonschema:"The name of the Dapr state store component (e.g., 'statestore')."`
+	Keys        []string `json:"keys" jsonschema:"The keys whose values should be retrieved."`
+	Parallelism int32    `json:"parallelism,omitempty" jsonschema:"Optional. Maximum number of parallel reads the state store performs. Omit or pass 0 to let Dapr choose."`
+}
+
+// bulkStateEntry is one key in a get_bulk_state result.
+type bulkStateEntry struct {
+	Key   string `json:"key"`
+	Found bool   `json:"found"`
+	Value string `json:"value,omitempty"`
+	Etag  string `json:"etag,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // DeleteStateArgs are the arguments of the delete_state tool.
@@ -128,6 +147,56 @@ func (h *handler) getState(ctx context.Context, _ *mcp.CallToolRequest, args Get
 	return toolkit.TextResult(text), map[string]any{"key": args.Key, "found": true, "value": value}, nil
 }
 
+func (h *handler) getBulkState(ctx context.Context, _ *mcp.CallToolRequest, args GetBulkStateArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call := h.inst.Start(ctx, toolGetBulkState, packageName,
+		attribute.String(toolkit.AttrComponentName, args.StoreName),
+		attribute.Int(attrKeysCount, len(args.Keys)),
+	)
+	defer call.End()
+
+	if len(args.Keys) == 0 {
+		return call.Fail(fmt.Errorf("%w: keys", toolkit.ErrMissingArgument)), nil, nil
+	}
+	fields := make([]toolkit.Field, 0, len(args.Keys)+1)
+	fields = append(fields, toolkit.Field{Name: "storeName", Value: args.StoreName})
+	for i, key := range args.Keys {
+		fields = append(fields, toolkit.Field{Name: fmt.Sprintf("keys[%d]", i), Value: key})
+	}
+	if res := call.Require(fields...); res != nil {
+		return res, nil, nil
+	}
+	if args.Parallelism < 0 {
+		return call.Fail(fmt.Errorf("parallelism must not be negative, got %d", args.Parallelism)), nil, nil
+	}
+
+	items, err := h.client.GetBulkState(ctx, args.StoreName, args.Keys, nil, args.Parallelism)
+	if err != nil {
+		return call.Fail(fmt.Errorf("get %d key(s) from state store %q: %w", len(args.Keys), args.StoreName, err)), nil, nil
+	}
+
+	entries := make([]bulkStateEntry, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		entries = append(entries, bulkStateEntry{
+			Key:   item.Key,
+			Found: len(item.Value) > 0,
+			Value: string(item.Value),
+			Etag:  item.Etag,
+			Error: item.Error,
+		})
+	}
+
+	body, err := toolkit.MarshalIndent(entries)
+	if err != nil {
+		return call.Fail(err), nil, nil
+	}
+	call.Succeed("store", args.StoreName, "keys", len(args.Keys), "returned", len(entries))
+	text := fmt.Sprintf("Retrieved %d key(s) from state store '%s':\n%s", len(entries), args.StoreName, body)
+	return toolkit.TextResult(text), map[string]any{"store_name": args.StoreName, "items": entries}, nil
+}
+
 func (h *handler) deleteState(ctx context.Context, _ *mcp.CallToolRequest, args DeleteStateArgs) (*mcp.CallToolResult, any, error) {
 	ctx, call := h.inst.Start(ctx, toolDeleteState, packageName, keyAttrs(args.StoreName, args.Key)...)
 	defer call.End()
@@ -189,8 +258,8 @@ func (h *handler) executeTransaction(ctx context.Context, _ *mcp.CallToolRequest
 	return toolkit.TextResult(text), map[string]any{"operations_executed": len(ops), "store_name": args.StoreName}, nil
 }
 
-// RegisterTools registers the save_state, get_state, delete_state and
-// execute_transaction tools on server.
+// RegisterTools registers the save_state, get_state, get_bulk_state,
+// delete_state and execute_transaction tools on server.
 // metrics may be nil.
 func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.ToolMetrics) {
 	h := &handler{client: client, inst: toolkit.NewInstrumentation(metrics)}
@@ -222,6 +291,20 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 		Annotations: toolkit.ReadOnly.Annotations(true),
 	}, h.getState)
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        toolGetBulkState,
+		Title:       "Retrieve Multiple Keys' State in Bulk",
+		InputSchema: toolkit.InputSchema[GetBulkStateArgs](),
+		Description: "Retrieves the values for multiple keys from a Dapr state store in a single call. **This is a READ-ONLY Data Retrieval operation and IS IDEMPOTENT.** Use instead of repeated `get_state` calls when several keys are needed.\n\n" +
+			"**GUIDANCE:**\n" +
+			"1. Use `get_components` to find the `storeName` of the state store.\n" +
+			"2. Each returned item has `key`, `found`, `value` and `etag`; a key that failed carries `error` instead of failing the whole call.\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `storeName` and a non-empty list of non-empty `keys`.\n" +
+			"2. **NEVER INVENT**: Never invent a key; each must be provided by the user or discovered.\n" +
+			"3. **CLARIFICATION**: If any required input is missing, you MUST ask the user for clarification.",
+		Annotations: toolkit.ReadOnly.Annotations(true),
+	}, h.getBulkState)
+	mcp.AddTool(server, &mcp.Tool{
 		Name:  toolDeleteState,
 		Title: "Delete State Key",
 		Description: "Deletes a key-value pair from a Dapr state store. **This is a critical, DESTRUCTIVE SIDE-EFFECT action that IS IDEMPOTENT.** Use only when instructed to remove specific, whitelisted application data.\n\n" +
@@ -250,5 +333,5 @@ func RegisterTools(server *mcp.Server, client StateClient, metrics *telemetry.To
 
 // ToolNames returns the names of the tools RegisterTools adds.
 func ToolNames() []string {
-	return []string{toolSaveState, toolGetState, toolDeleteState, toolExecuteTransaction}
+	return []string{toolSaveState, toolGetState, toolGetBulkState, toolDeleteState, toolExecuteTransaction}
 }
