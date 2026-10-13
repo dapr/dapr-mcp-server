@@ -33,6 +33,7 @@ type safety struct {
 var agentsSafetyTable = map[string]safety{
 	"get_components":              {readOnly: true, idempotent: true},
 	"get_state":                   {readOnly: true, idempotent: true, openWorld: true},
+	"get_bulk_state":              {readOnly: true, idempotent: true, openWorld: true},
 	"get_secret":                  {readOnly: true, idempotent: true, openWorld: true},
 	"get_bulk_secrets":            {readOnly: true, idempotent: true, openWorld: true},
 	"converse_with_llm":           {readOnly: true, idempotent: true, openWorld: true},
