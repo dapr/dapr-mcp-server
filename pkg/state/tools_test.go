@@ -411,18 +411,30 @@ func TestGetBulkStateTool(t *testing.T) {
 		setupMock   func(*mocks.MockDaprClient)
 		wantErr     bool
 		wantContent []string
+		// wantItems is the expected structured "items"; nil when the call fails.
+		wantItems []bulkStateEntry
 	}{
 		{
 			name: "returns every key with its value in the text",
-			args: GetBulkStateArgs{StoreName: "statestore", Keys: []string{"a", "b"}},
+			args: GetBulkStateArgs{StoreName: "statestore", Keys: []string{"a", "b", "c"}},
 			setupMock: func(m *mocks.MockDaprClient) {
-				m.On("GetBulkState", mock.Anything, "statestore", []string{"a", "b"}, mock.Anything, int32(0)).
+				m.On("GetBulkState", mock.Anything, "statestore", []string{"a", "b", "c"}, mock.Anything, int32(0)).
 					Return([]*client.BulkStateItem{
 						{Key: "a", Value: []byte(`v1`), Etag: "1"},
 						{Key: "b", Value: []byte(`v2`), Etag: "2"},
+						{Key: "c"},
 					}, nil)
 			},
-			wantContent: []string{"Retrieved 2 key(s) from state store 'statestore'", `"key": "a"`, `"value": "v2"`},
+			wantContent: []string{
+				"Read 3 key(s) from state store 'statestore' (2 found):",
+				`"key": "a"`, `"found": true`, `"etag": "1"`, `"value": "v2"`, `"etag": "2"`,
+				`"key": "c"`, `"found": false`,
+			},
+			wantItems: []bulkStateEntry{
+				{Key: "a", Found: true, Value: "v1", Etag: "1"},
+				{Key: "b", Found: true, Value: "v2", Etag: "2"},
+				{Key: "c", Found: false},
+			},
 		},
 		{
 			name: "per-key error is surfaced without failing the call",
@@ -431,7 +443,11 @@ func TestGetBulkStateTool(t *testing.T) {
 				m.On("GetBulkState", mock.Anything, "statestore", []string{"a"}, mock.Anything, int32(0)).
 					Return([]*client.BulkStateItem{{Key: "a", Error: "key not found"}}, nil)
 			},
-			wantContent: []string{`"error": "key not found"`},
+			wantContent: []string{
+				"Read 1 key(s) from state store 'statestore' (0 found):",
+				`"found": false`, `"error": "key not found"`,
+			},
+			wantItems: []bulkStateEntry{{Key: "a", Found: false, Error: "key not found"}},
 		},
 		{
 			name: "dapr failure",
@@ -479,7 +495,7 @@ func TestGetBulkStateTool(t *testing.T) {
 			tt.setupMock(mockClient)
 			h, _ := newTestHandler(mockClient)
 
-			result, _, err := h.getBulkState(context.Background(), &mcp.CallToolRequest{}, tt.args)
+			result, structured, err := h.getBulkState(context.Background(), &mcp.CallToolRequest{}, tt.args)
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantErr, result.IsError)
@@ -487,6 +503,11 @@ func TestGetBulkStateTool(t *testing.T) {
 			require.True(t, ok)
 			for _, want := range tt.wantContent {
 				assert.Contains(t, text.Text, want)
+			}
+			if tt.wantItems == nil {
+				assert.Nil(t, structured, "a failed call has no structured result")
+			} else {
+				assert.Equal(t, map[string]any{"store_name": "statestore", "items": tt.wantItems}, structured)
 			}
 			mockClient.AssertExpectations(t)
 		})

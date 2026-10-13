@@ -175,25 +175,30 @@ func (h *handler) getBulkState(ctx context.Context, _ *mcp.CallToolRequest, args
 	}
 
 	entries := make([]bulkStateEntry, 0, len(items))
+	found := 0
 	for _, item := range items {
 		if item == nil {
 			continue
 		}
-		entries = append(entries, bulkStateEntry{
+		entry := bulkStateEntry{
 			Key:   item.Key,
 			Found: len(item.Value) > 0,
 			Value: string(item.Value),
 			Etag:  item.Etag,
 			Error: item.Error,
-		})
+		}
+		if entry.Found {
+			found++
+		}
+		entries = append(entries, entry)
 	}
 
 	body, err := toolkit.MarshalIndent(entries)
 	if err != nil {
 		return call.Fail(err), nil, nil
 	}
-	call.Succeed("store", args.StoreName, "keys", len(args.Keys), "returned", len(entries))
-	text := fmt.Sprintf("Retrieved %d key(s) from state store '%s':\n%s", len(entries), args.StoreName, body)
+	call.Succeed("store", args.StoreName, "keys", len(args.Keys), "returned", len(entries), "found", found)
+	text := fmt.Sprintf("Read %d key(s) from state store '%s' (%d found):\n%s", len(entries), args.StoreName, found, body)
 	return toolkit.TextResult(text), map[string]any{"store_name": args.StoreName, "items": entries}, nil
 }
 
