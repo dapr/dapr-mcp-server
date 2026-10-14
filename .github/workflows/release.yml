@@ -12,6 +12,10 @@ on:
         required: false
         type: boolean
         default: false
+  # A release published from the GitHub UI runs the same pipeline from its tag.
+  # Releases this workflow creates itself use GITHUB_TOKEN, so they do not start a second run.
+  release:
+    types: [published]
 
 # Read-only by default; only the jobs that publish get write access.
 permissions:
@@ -20,7 +24,8 @@ permissions:
 # Scripts read the version from the environment, never from an inline expression,
 # so an unvalidated input cannot be injected into the shell.
 env:
-  VERSION: ${{ github.event.inputs.version }}
+  VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
+  PRERELEASE: ${{ github.event_name == 'release' && format('{0}', github.event.release.prerelease) || github.event.inputs.prerelease }}
 
 jobs:
   validate:
@@ -38,7 +43,7 @@ jobs:
       # The MCP Registry has no prerelease flag; only a semver suffix keeps a prerelease apart from a release.
       # Checked here so the run fails before anything is published.
       - name: Check prerelease version has a suffix
-        if: github.event.inputs.prerelease == 'true'
+        if: env.PRERELEASE == 'true'
         run: |
           if [[ "$VERSION" != *-* ]]; then
             echo "::error::Prerelease $VERSION has no semver suffix (e.g. v1.0.0-rc.1), so it would be published to the MCP Registry as a full release."
@@ -141,7 +146,9 @@ jobs:
           sha256sum * > checksums.txt
           cat checksums.txt
 
+      # A release published from the UI keeps the notes its author wrote.
       - name: Generate changelog
+        if: github.event_name == 'workflow_dispatch'
         id: changelog
         run: |
           # Get the previous tag
@@ -172,10 +179,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Release ${{ github.event.inputs.version }}
-          body_path: changelog.md
-          prerelease: ${{ github.event.inputs.prerelease }}
+          tag_name: ${{ env.VERSION }}
+          name: ${{ github.event_name == 'workflow_dispatch' && format('Release {0}', env.VERSION) || '' }}
+          body_path: ${{ github.event_name == 'workflow_dispatch' && 'changelog.md' || '' }}
+          prerelease: ${{ env.PRERELEASE }}
           files: |
             release/*
           fail_on_unmatched_files: true
@@ -212,8 +219,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ github.event.inputs.version }}
-            type=raw,value=latest,enable=${{ github.event.inputs.prerelease == 'false' }}
+            type=raw,value=${{ env.VERSION }}
+            type=raw,value=latest,enable=${{ env.PRERELEASE == 'false' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7.2.0
@@ -224,14 +231,14 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.event.inputs.version }}
+            VERSION=${{ env.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}
+          image-ref: ghcr.io/${{ github.repository }}:${{ env.VERSION }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
