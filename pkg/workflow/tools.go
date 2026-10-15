@@ -4,6 +4,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/dapr/dapr-mcp-server/internal/toolkit"
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
@@ -24,13 +26,25 @@ const (
 	toolGetWorkflowStatus  = "get_workflow_status"
 	toolGetWorkflowHistory = "get_workflow_history"
 	toolListWorkflows      = "list_workflows"
+	toolStartWorkflow      = "start_workflow"
+	toolRerunWorkflow      = "rerun_workflow"
+	toolPauseWorkflow      = "pause_workflow"
+	toolResumeWorkflow     = "resume_workflow"
+	toolTerminateWorkflow  = "terminate_workflow"
+	toolRaiseWorkflowEvent = "raise_workflow_event"
+	toolPurgeWorkflow      = "purge_workflow"
 
-	attrInstanceID = "dapr.workflow.instance_id"
+	attrInstanceID   = "dapr.workflow.instance_id"
+	attrWorkflowName = "dapr.workflow.name"
+	attrEventName    = "dapr.workflow.event_name"
+	attrEventID      = "dapr.workflow.event_id"
 
 	defaultListLimit = 100
 	maxListLimit     = 500
 
 	statusPrefix = "ORCHESTRATION_STATUS_"
+
+	rerunEventIDHint = "use the event_id of a scheduling event (e.g., taskScheduled) from get_workflow_history"
 )
 
 // WorkflowClient defines the workflow operations used by the tools.
@@ -377,6 +391,200 @@ func (h *handler) listWorkflows(ctx context.Context, _ *mcp.CallToolRequest, arg
 	return toolkit.TextResult(sb.String()), structured, nil
 }
 
+// StartWorkflowArgs are the arguments of the start_workflow tool.
+type StartWorkflowArgs struct {
+	WorkflowName string `json:"workflowName" jsonschema:"The name of the workflow to start, as registered by the workflow application (e.g., 'order_processing_workflow')."`
+	InstanceID   string `json:"instanceID,omitempty" jsonschema:"Optional unique instance ID for the new workflow. If omitted, Dapr generates one."`
+	Input        string `json:"input,omitempty" jsonschema:"Optional input for the workflow, typically a JSON string."`
+	StartTime    string `json:"startTime,omitempty" jsonschema:"Optional scheduled start time in RFC 3339 format (e.g., '2026-07-15T06:00:00Z'). If omitted, the workflow starts immediately."`
+}
+
+// ReasonArgs are the arguments of the pause_workflow and resume_workflow tools.
+type ReasonArgs struct {
+	InstanceID string `json:"instanceID" jsonschema:"The workflow instance ID."`
+	Reason     string `json:"reason,omitempty" jsonschema:"Optional short reason, recorded for operators."`
+}
+
+// RerunWorkflowArgs are the arguments of the rerun_workflow tool.
+type RerunWorkflowArgs struct {
+	InstanceID    string `json:"instanceID" jsonschema:"The instance ID of the (typically failed) workflow to rerun."`
+	EventID       int64  `json:"eventID" jsonschema:"The event_id of a scheduling event (e.g., taskScheduled) from get_workflow_history to rerun from."`
+	NewInstanceID string `json:"newInstanceID,omitempty" jsonschema:"Optional instance ID for the new instance. If omitted, Dapr generates one."`
+	Input         string `json:"input,omitempty" jsonschema:"Optional replacement input for the rerun, typically a JSON string. If omitted, the original input is reused."`
+}
+
+// RaiseWorkflowEventArgs are the arguments of the raise_workflow_event tool.
+type RaiseWorkflowEventArgs struct {
+	InstanceID string `json:"instanceID" jsonschema:"The instance ID of the workflow waiting for the event."`
+	EventName  string `json:"eventName" jsonschema:"The event name the workflow is waiting for (must match the name used in the workflow code)."`
+	EventData  string `json:"eventData,omitempty" jsonschema:"Optional event payload, typically a JSON string."`
+}
+
+func (h *handler) startWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args StartWorkflowArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call := h.inst.Start(ctx, toolStartWorkflow, packageName, attribute.String(attrWorkflowName, args.WorkflowName))
+	defer call.End()
+
+	if res := call.Require(toolkit.Field{Name: "workflowName", Value: args.WorkflowName}); res != nil {
+		return res, nil, nil
+	}
+
+	var opts []wf.NewWorkflowOptions
+	// A whitespace-only ID counts as omitted, so Dapr generates one.
+	if strings.TrimSpace(args.InstanceID) != "" {
+		opts = append(opts, wf.WithInstanceID(args.InstanceID))
+	}
+	if args.Input != "" {
+		// Raw, because the input already is a JSON string; WithInput would encode it again.
+		opts = append(opts, wf.WithRawInput(wrapperspb.String(args.Input)))
+	}
+	if args.StartTime != "" {
+		startTime, err := time.Parse(time.RFC3339, args.StartTime)
+		if err != nil {
+			return call.Fail(fmt.Errorf("invalid startTime %q: expected RFC 3339 (e.g., '2026-07-15T06:00:00Z'): %w", args.StartTime, err)), nil, nil
+		}
+		opts = append(opts, wf.WithStartTime(startTime))
+	}
+
+	id, err := h.client.ScheduleWorkflow(ctx, args.WorkflowName, opts...)
+	if err != nil {
+		return call.Fail(fmt.Errorf("start workflow %q: %w", args.WorkflowName, err)), nil, nil
+	}
+
+	call.Succeed("workflow", args.WorkflowName, "instance_id", id)
+	structured := map[string]any{"workflow_name": args.WorkflowName, "instance_id": id}
+	if args.StartTime != "" {
+		structured["start_time"] = args.StartTime
+		text := fmt.Sprintf("Successfully scheduled workflow '%s' with instance ID '%s' to start at %s.", args.WorkflowName, id, args.StartTime)
+		return toolkit.TextResult(text), structured, nil
+	}
+	text := fmt.Sprintf("Successfully started workflow '%s' with instance ID '%s'.", args.WorkflowName, id)
+	return toolkit.TextResult(text), structured, nil
+}
+
+// withRawRerunInput sets the rerun input verbatim.
+// wf.WithRerunInput would JSON-encode it, double-encoding an input that already is a JSON string.
+func withRawRerunInput(input string) wf.RerunOptions {
+	return func(req *protos.RerunWorkflowFromEventRequest) error {
+		req.Input = wrapperspb.String(input)
+		req.OverwriteInput = true
+		return nil
+	}
+}
+
+func (h *handler) rerunWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args RerunWorkflowArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call, res := h.startInstanceCall(ctx, toolRerunWorkflow, args.InstanceID, attribute.Int64(attrEventID, args.EventID))
+	defer call.End()
+	if res != nil {
+		return res, nil, nil
+	}
+	switch {
+	case args.EventID < 0:
+		return call.Fail(fmt.Errorf("invalid eventID %d: events without a sequence ID cannot be rerun from; %s", args.EventID, rerunEventIDHint)), nil, nil
+	case args.EventID > math.MaxUint32:
+		return call.Fail(fmt.Errorf("invalid eventID %d: out of range; %s", args.EventID, rerunEventIDHint)), nil, nil
+	}
+
+	var opts []wf.RerunOptions
+	// A whitespace-only ID counts as omitted, so Dapr generates one.
+	if strings.TrimSpace(args.NewInstanceID) != "" {
+		opts = append(opts, wf.WithRerunNewInstanceID(args.NewInstanceID))
+	}
+	if args.Input != "" {
+		opts = append(opts, withRawRerunInput(args.Input))
+	}
+
+	newID, err := h.client.RerunWorkflowFromEvent(ctx, args.InstanceID, uint32(args.EventID), opts...) //nolint:gosec // range-checked above
+	if err != nil {
+		return call.Fail(fmt.Errorf("rerun workflow instance %q from event %d: %w", args.InstanceID, args.EventID, err)), nil, nil
+	}
+
+	call.Succeed("instance_id", args.InstanceID, "event_id", args.EventID, "new_instance_id", newID)
+	text := fmt.Sprintf("Successfully reran workflow instance '%s' from event %d as new instance '%s'.", args.InstanceID, args.EventID, newID)
+	return toolkit.TextResult(text), map[string]any{"source_instance_id": args.InstanceID, "event_id": args.EventID, "new_instance_id": newID}, nil
+}
+
+func (h *handler) pauseWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args ReasonArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call, res := h.startInstanceCall(ctx, toolPauseWorkflow, args.InstanceID)
+	defer call.End()
+	if res != nil {
+		return res, nil, nil
+	}
+	if err := h.client.SuspendWorkflow(ctx, args.InstanceID, args.Reason); err != nil {
+		return call.Fail(fmt.Errorf("pause workflow instance %q: %w", args.InstanceID, err)), nil, nil
+	}
+	call.Succeed("instance_id", args.InstanceID)
+	text := fmt.Sprintf("Successfully paused workflow instance '%s'.", args.InstanceID)
+	return toolkit.TextResult(text), map[string]any{"instance_id": args.InstanceID, "requested": true}, nil
+}
+
+func (h *handler) resumeWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args ReasonArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call, res := h.startInstanceCall(ctx, toolResumeWorkflow, args.InstanceID)
+	defer call.End()
+	if res != nil {
+		return res, nil, nil
+	}
+	if err := h.client.ResumeWorkflow(ctx, args.InstanceID, args.Reason); err != nil {
+		return call.Fail(fmt.Errorf("resume workflow instance %q: %w", args.InstanceID, err)), nil, nil
+	}
+	call.Succeed("instance_id", args.InstanceID)
+	text := fmt.Sprintf("Successfully resumed workflow instance '%s'.", args.InstanceID)
+	return toolkit.TextResult(text), map[string]any{"instance_id": args.InstanceID, "requested": true}, nil
+}
+
+func (h *handler) terminateWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args InstanceArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call, res := h.startInstanceCall(ctx, toolTerminateWorkflow, args.InstanceID)
+	defer call.End()
+	if res != nil {
+		return res, nil, nil
+	}
+	if err := h.client.TerminateWorkflow(ctx, args.InstanceID); err != nil {
+		return call.Fail(fmt.Errorf("terminate workflow instance %q: %w", args.InstanceID, err)), nil, nil
+	}
+	call.Succeed("instance_id", args.InstanceID)
+	text := fmt.Sprintf("Successfully requested termination of workflow instance '%s'.", args.InstanceID)
+	return toolkit.TextResult(text), map[string]any{"instance_id": args.InstanceID, "requested": true}, nil
+}
+
+func (h *handler) raiseWorkflowEvent(ctx context.Context, _ *mcp.CallToolRequest, args RaiseWorkflowEventArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call := h.inst.Start(ctx, toolRaiseWorkflowEvent, packageName,
+		attribute.String(attrInstanceID, args.InstanceID),
+		attribute.String(attrEventName, args.EventName),
+	)
+	defer call.End()
+
+	if res := call.Require(
+		toolkit.Field{Name: "instanceID", Value: args.InstanceID},
+		toolkit.Field{Name: "eventName", Value: args.EventName},
+	); res != nil {
+		return res, nil, nil
+	}
+
+	var opts []wf.RaiseEventOptions
+	if args.EventData != "" {
+		opts = append(opts, wf.WithRawEventData(wrapperspb.String(args.EventData)))
+	}
+	if err := h.client.RaiseEvent(ctx, args.InstanceID, args.EventName, opts...); err != nil {
+		return call.Fail(fmt.Errorf("raise event %q for workflow instance %q: %w", args.EventName, args.InstanceID, err)), nil, nil
+	}
+	call.Succeed("instance_id", args.InstanceID, "event", args.EventName)
+	text := fmt.Sprintf("Successfully raised event '%s' for workflow instance '%s'.", args.EventName, args.InstanceID)
+	return toolkit.TextResult(text), map[string]any{"instance_id": args.InstanceID, "event_name": args.EventName}, nil
+}
+
+func (h *handler) purgeWorkflow(ctx context.Context, _ *mcp.CallToolRequest, args InstanceArgs) (*mcp.CallToolResult, any, error) {
+	ctx, call, res := h.startInstanceCall(ctx, toolPurgeWorkflow, args.InstanceID)
+	defer call.End()
+	if res != nil {
+		return res, nil, nil
+	}
+	if err := h.client.PurgeWorkflowState(ctx, args.InstanceID); err != nil {
+		return call.Fail(fmt.Errorf("purge workflow instance %q: %w", args.InstanceID, err)), nil, nil
+	}
+	call.Succeed("instance_id", args.InstanceID)
+	text := fmt.Sprintf("Successfully purged the state of workflow instance '%s'.", args.InstanceID)
+	return toolkit.TextResult(text), map[string]any{"instance_id": args.InstanceID, "purged": true}, nil
+}
+
 // RegisterTools registers the workflow tools on server.
 // client targets the server's own sidecar.
 // metrics may be nil.
@@ -413,4 +621,70 @@ func RegisterTools(server *mcp.Server, client WorkflowClient, metrics *telemetry
 			"2. If a continuation token is returned, call again with it before drawing conclusions about totals.",
 		Annotations: toolkit.ReadOnly.Annotations(true),
 	}, h.listWorkflows)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolStartWorkflow,
+		Title: "Start Workflow Instance",
+		Description: "Starts a new Dapr Workflow instance, immediately or at a scheduled `startTime`. **This is a SIDE-EFFECT action that is NOT IDEMPOTENT** unless an explicit `instanceID` is provided.\n\n" +
+			"**GUIDANCE:**\n" +
+			"1. The workflow must be registered by the app this server's sidecar runs as.\n" +
+			"2. Provide `input` as a JSON string when the workflow expects input.\n" +
+			"3. Workflows run asynchronously: use `get_workflow_status` to track progress.\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `workflowName`.\n" +
+			"2. **NEVER INVENT**: Do NOT invent workflow names; ask the user if unknown.",
+		Annotations: toolkit.AdditiveWrite.Annotations(true),
+	}, h.startWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolRerunWorkflow,
+		Title: "Rerun Workflow From Event",
+		Description: "Reruns a workflow instance from an event in its history as a NEW instance, reusing the results recorded before that event. **This is a SIDE-EFFECT action that is NOT IDEMPOTENT** unless an explicit `newInstanceID` is provided.\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `instanceID` and an `eventID`.\n" +
+			"2. **NEVER INVENT**: Take `eventID` from `get_workflow_history`: use the `event_id` of a scheduling event (e.g., `taskScheduled`). Events without an `event_id` cannot be rerun from; use the `task_scheduled_id` of a failed task to find its scheduling event.",
+		Annotations: toolkit.AdditiveWrite.Annotations(true),
+	}, h.rerunWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolPauseWorkflow,
+		Title: "Pause Workflow Instance",
+		Description: "Pauses (suspends) a running workflow instance until it is resumed with `resume_workflow`. **This is a SIDE-EFFECT action that IS IDEMPOTENT.**\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `instanceID`.",
+		Annotations: toolkit.IdempotentWrite.Annotations(true),
+	}, h.pauseWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolResumeWorkflow,
+		Title: "Resume Workflow Instance",
+		Description: "Resumes a paused (suspended) workflow instance. **This is a SIDE-EFFECT action that IS IDEMPOTENT.**\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `instanceID`.",
+		Annotations: toolkit.IdempotentWrite.Annotations(true),
+	}, h.resumeWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolTerminateWorkflow,
+		Title: "Terminate Workflow Instance",
+		Description: "Forcefully terminates a running workflow instance without executing its remaining steps. It also terminates the child workflows the instance started. **This is a DESTRUCTIVE action that cannot be undone and IS IDEMPOTENT.**\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `instanceID`.\n" +
+			"2. **CONFIRMATION**: Confirm with the user before calling this tool, unless the user explicitly asked for it.",
+		Annotations: toolkit.DestructiveIdempotent.Annotations(true),
+	}, h.terminateWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolRaiseWorkflowEvent,
+		Title: "Raise Workflow Event",
+		Description: "Delivers an external event (e.g., an approval) to a workflow instance waiting for it. **This is a SIDE-EFFECT action that is NOT IDEMPOTENT.**\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide non-empty `instanceID` and `eventName` values.\n" +
+			"2. **NEVER INVENT**: `eventName` must exactly match the name the workflow waits for.\n" +
+			"3. Provide `eventData` as a JSON string when the workflow expects a payload.",
+		Annotations: toolkit.AdditiveWrite.Annotations(true),
+	}, h.raiseWorkflowEvent)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  toolPurgeWorkflow,
+		Title: "Purge Workflow Instance State",
+		Description: "Permanently deletes the state and history of a COMPLETED, FAILED, or TERMINATED workflow instance. The purge request is not recursive: child workflows keep their state, purge those separately. **This is a DESTRUCTIVE action that cannot be undone and is NOT IDEMPOTENT.**\n\n" +
+			"**ARGUMENT RULES:**\n" +
+			"1. **REQUIRED INPUTS**: You MUST provide a non-empty `instanceID`.\n" +
+			"2. **CONFIRMATION**: Confirm with the user before calling this tool, unless the user explicitly asked for it.",
+		Annotations: toolkit.DestructiveWrite.Annotations(true),
+	}, h.purgeWorkflow)
 }

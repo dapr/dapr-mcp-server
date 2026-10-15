@@ -152,6 +152,7 @@ func TestBuildHTTPHandlerErrors(t *testing.T) {
 func TestBuildInstructionsMentionsGetComponents(t *testing.T) {
 	t.Parallel()
 	assert.Contains(t, buildInstructions(), "get_components")
+	assert.Contains(t, buildInstructions(), "terminate_workflow")
 }
 
 // testJWKS returns a key set holding one freshly generated signing key,
