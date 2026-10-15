@@ -82,6 +82,9 @@ All tools, with links to their entries in the [tool reference](https://docs.dapr
 | metadata | [`get_components`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_components) | Core | Always call first |
 | invoke | [`invoke_service`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#invoke_service) | Core | Service-to-service HTTP invocation |
 | actors | [`invoke_actor_method`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#invoke_actor_method) | Core | Virtual-actor method call |
+| workflow | [`list_workflows`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#list_workflows) | Core | Read-only; this app's instances, without payloads |
+| workflow | [`get_workflow_status`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_workflow_status) | Core | Read-only |
+| workflow | [`get_workflow_history`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_workflow_history) | Core | Read-only; event history |
 | state | [`save_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#save_state) | `state.*` | Idempotent save |
 | state | [`get_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_state) | `state.*` | Read-only |
 | state | [`get_bulk_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_bulk_state) | `state.*` | Read-only; several keys |
