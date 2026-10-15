@@ -7,6 +7,9 @@ on:
   pull_request:
     branches:
       - main
+  # The merge queue needs CI to report its checks on each queued merge group.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
