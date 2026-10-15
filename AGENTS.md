@@ -98,6 +98,7 @@ The only always-available tools that don't need a prior `get_components` call ar
 - **Call another microservice?** → `invoke_service`.
 - **Call a stateful actor?** → `invoke_actor_method`.
 - **Inspect a long-running process?** → `list_workflows`, then `get_workflow_status`; `get_workflow_history` to see why it failed or is stuck.
+- **Run or steer a long-running process?** → `start_workflow`; `raise_workflow_event` to unblock one waiting for input; `pause_workflow` / `resume_workflow`; `rerun_workflow` to retry from a scheduling event in the history; confirm with the user before `terminate_workflow` or `purge_workflow` unless the user explicitly asked for it.
 - **Reach an external system** (webhook, queue, object store)? → `invoke_output_binding`.
 - **Fetch a secret?** → `get_secret` (single) or `get_bulk_secrets` (high-risk — only when user explicitly asked to enumerate).
 - **Defer reasoning to another LLM?** → `converse_with_llm`.
@@ -111,10 +112,10 @@ Classification matters for retry and rollback logic.
 | Property | Tools |
 | --- | --- |
 | `read-only`, `idempotent` | `get_components`, `get_state`, `get_bulk_state`, `get_secret`, `get_bulk_secrets`, `converse_with_llm`, `decrypt_data`, `get_workflow_status`, `get_workflow_history`, `list_workflows` |
-| `idempotent`, `side-effect` | `save_state`, `acquire_lock` |
-| `destructive`, `idempotent` | `delete_state` |
-| `destructive`, `not-idempotent`, `side-effect` | `invoke_service`, `invoke_actor_method`, `invoke_output_binding`, `execute_transaction`, `encrypt_data` |
-| `not-idempotent`, `side-effect` | `publish_event`, `publish_event_with_metadata`, `release_lock` |
+| `idempotent`, `side-effect` | `save_state`, `acquire_lock`, `pause_workflow`, `resume_workflow` |
+| `destructive`, `idempotent` | `delete_state`, `terminate_workflow` |
+| `destructive`, `not-idempotent`, `side-effect` | `invoke_service`, `invoke_actor_method`, `invoke_output_binding`, `execute_transaction`, `encrypt_data`, `purge_workflow` |
+| `not-idempotent`, `side-effect` | `publish_event`, `publish_event_with_metadata`, `release_lock`, `start_workflow`, `rerun_workflow`, `raise_workflow_event` |
 
 **Rules of thumb**:
 

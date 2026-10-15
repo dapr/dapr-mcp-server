@@ -84,7 +84,14 @@ All tools, with links to their entries in the [tool reference](https://docs.dapr
 | actors | [`invoke_actor_method`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#invoke_actor_method) | Core | Virtual-actor method call |
 | workflow | [`list_workflows`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#list_workflows) | Core | Read-only; this app's instances, without payloads |
 | workflow | [`get_workflow_status`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_workflow_status) | Core | Read-only |
-| workflow | [`get_workflow_history`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_workflow_history) | Core | Read-only; event history |
+| workflow | [`get_workflow_history`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_workflow_history) | Core | Read-only; event history, with the event IDs to rerun from |
+| workflow | [`start_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#start_workflow) | Core | Not idempotent without `instanceID` |
+| workflow | [`raise_workflow_event`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#raise_workflow_event) | Core | Not idempotent |
+| workflow | [`pause_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#pause_workflow) | Core | Idempotent |
+| workflow | [`resume_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#resume_workflow) | Core | Idempotent |
+| workflow | [`rerun_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#rerun_workflow) | Core | New instance from a scheduling event in the history |
+| workflow | [`terminate_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#terminate_workflow) | Core | Destructive; also terminates child workflows |
+| workflow | [`purge_workflow`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#purge_workflow) | Core | Destructive; deletes state and history, not recursive |
 | state | [`save_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#save_state) | `state.*` | Idempotent save |
 | state | [`get_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_state) | `state.*` | Read-only |
 | state | [`get_bulk_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_bulk_state) | `state.*` | Read-only; several keys |
