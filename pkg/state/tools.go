@@ -198,7 +198,7 @@ func (h *handler) getBulkState(ctx context.Context, _ *mcp.CallToolRequest, args
 		return call.Fail(err), nil, nil
 	}
 	call.Succeed("store", args.StoreName, "keys", len(args.Keys), "returned", len(entries), "found", found)
-	text := fmt.Sprintf("Read %d key(s) from state store '%s' (%d found):\n%s", len(entries), args.StoreName, found, body)
+	text := fmt.Sprintf("Read %d of %d key(s) from state store '%s' (%d found):\n%s", len(entries), len(args.Keys), args.StoreName, found, body)
 	return toolkit.TextResult(text), map[string]any{"store_name": args.StoreName, "items": entries}, nil
 }
 

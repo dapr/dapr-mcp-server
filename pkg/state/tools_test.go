@@ -426,7 +426,7 @@ func TestGetBulkStateTool(t *testing.T) {
 					}, nil)
 			},
 			wantContent: []string{
-				"Read 3 key(s) from state store 'statestore' (2 found):",
+				"Read 3 of 3 key(s) from state store 'statestore' (2 found):",
 				`"key": "a"`, `"found": true`, `"etag": "1"`, `"value": "v2"`, `"etag": "2"`,
 				`"key": "c"`, `"found": false`,
 			},
@@ -444,10 +444,20 @@ func TestGetBulkStateTool(t *testing.T) {
 					Return([]*client.BulkStateItem{{Key: "a", Error: "key not found"}}, nil)
 			},
 			wantContent: []string{
-				"Read 1 key(s) from state store 'statestore' (0 found):",
+				"Read 1 of 1 key(s) from state store 'statestore' (0 found):",
 				`"found": false`, `"error": "key not found"`,
 			},
 			wantItems: []bulkStateEntry{{Key: "a", Found: false, Error: "key not found"}},
+		},
+		{
+			name: "store returns fewer items than keys",
+			args: GetBulkStateArgs{StoreName: "statestore", Keys: []string{"a", "b", "c"}},
+			setupMock: func(m *mocks.MockDaprClient) {
+				m.On("GetBulkState", mock.Anything, "statestore", []string{"a", "b", "c"}, mock.Anything, int32(0)).
+					Return([]*client.BulkStateItem{{Key: "a", Value: []byte(`v1`)}, nil}, nil)
+			},
+			wantContent: []string{"Read 1 of 3 key(s) from state store 'statestore' (1 found):"},
+			wantItems:   []bulkStateEntry{{Key: "a", Found: true, Value: "v1"}},
 		},
 		{
 			name: "dapr failure",
