@@ -92,7 +92,7 @@ The only always-available tools that don't need a prior `get_components` call ar
 ### Decision tree: which tool?
 
 - **Persist data?** → `save_state`. Need atomicity across multiple keys? → `execute_transaction`.
-- **Read data back?** → `get_state`.
+- **Read data back?** → `get_state` (one key) or `get_bulk_state` (several keys in one call).
 - **Forget data?** → `delete_state`.
 - **Publish an event?** → `publish_event`. Need message TTL / routing headers? → `publish_event_with_metadata`.
 - **Call another microservice?** → `invoke_service`.
@@ -109,7 +109,7 @@ Classification matters for retry and rollback logic.
 
 | Property | Tools |
 | --- | --- |
-| `read-only`, `idempotent` | `get_components`, `get_state`, `get_secret`, `get_bulk_secrets`, `converse_with_llm`, `decrypt_data` |
+| `read-only`, `idempotent` | `get_components`, `get_state`, `get_bulk_state`, `get_secret`, `get_bulk_secrets`, `converse_with_llm`, `decrypt_data` |
 | `idempotent`, `side-effect` | `save_state`, `acquire_lock` |
 | `destructive`, `idempotent` | `delete_state` |
 | `destructive`, `not-idempotent`, `side-effect` | `invoke_service`, `invoke_actor_method`, `invoke_output_binding`, `execute_transaction`, `encrypt_data` |
