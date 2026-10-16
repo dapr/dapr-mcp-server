@@ -14,12 +14,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 
 	"github.com/dapr/dapr-mcp-server/pkg/metadata"
 )
 
 var (
-	coreTools         = []string{"get_components", "invoke_actor_method", "invoke_service"}
+	coreTools         = []string{"get_components", "get_workflow_history", "get_workflow_status", "invoke_actor_method", "invoke_service", "list_workflows", "pause_workflow", "purge_workflow", "raise_workflow_event", "rerun_workflow", "resume_workflow", "start_workflow", "terminate_workflow"}
 	stateTools        = []string{"delete_state", "execute_transaction", "get_state", "save_state"}
 	pubsubTools       = []string{"publish_event", "publish_event_with_metadata"}
 	bindingsTools     = []string{"invoke_output_binding"}
@@ -49,6 +50,9 @@ func (c *testDaprClient) GetMetadata(ctx context.Context) (*dapr.GetMetadataResp
 }
 
 func (c *testDaprClient) Close() {}
+
+// GrpcClientConn returns nil: registration only stores the connection.
+func (c *testDaprClient) GrpcClientConn() *grpc.ClientConn { return nil }
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
