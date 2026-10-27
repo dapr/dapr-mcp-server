@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 # Install ca-certificates for HTTPS and git for modules
 RUN apk add --no-cache ca-certificates git
@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
     ./cmd/dapr-mcp-server
 
 # Runtime stage - using distroless for security hardening
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:26f9b99f2463f55f20db19feb4d96eb88b056e0f1be7016bb9296a464a89d772
 
 # Proves ownership of the image to the MCP Registry; must match the name in server.json
 LABEL io.modelcontextprotocol.server.name="io.github.dapr/dapr-mcp-server"
