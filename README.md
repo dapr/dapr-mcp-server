@@ -83,6 +83,7 @@ All tools, with links to their entries in the [tool reference](https://docs.dapr
 | actors | [`invoke_actor_method`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#invoke_actor_method) | Core | Virtual-actor method call |
 | state | [`save_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#save_state) | `state.*` | Idempotent save |
 | state | [`get_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_state) | `state.*` | Read-only |
+| state | [`get_bulk_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#get_bulk_state) | `state.*` | Read-only; several keys |
 | state | [`delete_state`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#delete_state) | `state.*` | Destructive, idempotent |
 | state | [`execute_transaction`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#execute_transaction) | `state.*` | Atomic batch |
 | pubsub | [`publish_event`](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server/dapr-mcp-server-tool-reference/#publish_event) | `pubsub.*` | Not idempotent |

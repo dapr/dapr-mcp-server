@@ -20,7 +20,7 @@ import (
 
 var (
 	coreTools         = []string{"get_components", "invoke_actor_method", "invoke_service"}
-	stateTools        = []string{"delete_state", "execute_transaction", "get_state", "save_state"}
+	stateTools        = []string{"delete_state", "execute_transaction", "get_bulk_state", "get_state", "save_state"}
 	pubsubTools       = []string{"publish_event", "publish_event_with_metadata"}
 	bindingsTools     = []string{"invoke_output_binding"}
 	secretsTools      = []string{"get_bulk_secrets", "get_secret"}
