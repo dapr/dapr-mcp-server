@@ -19,6 +19,7 @@ import (
 	"github.com/dapr/dapr-mcp-server/pkg/pubsub"
 	"github.com/dapr/dapr-mcp-server/pkg/secrets"
 	"github.com/dapr/dapr-mcp-server/pkg/state"
+	"github.com/dapr/dapr-mcp-server/pkg/workflow"
 )
 
 // unusedClient satisfies dapr.Client for registration only.
@@ -38,6 +39,16 @@ var agentsSafetyTable = map[string]safety{
 	"get_bulk_secrets":            {readOnly: true, idempotent: true, openWorld: true},
 	"converse_with_llm":           {readOnly: true, idempotent: true, openWorld: true},
 	"decrypt_data":                {readOnly: true, idempotent: true, openWorld: true},
+	"get_workflow_status":         {readOnly: true, idempotent: true, openWorld: true},
+	"get_workflow_history":        {readOnly: true, idempotent: true, openWorld: true},
+	"list_workflows":              {readOnly: true, idempotent: true, openWorld: true},
+	"pause_workflow":              {idempotent: true, openWorld: true},
+	"resume_workflow":             {idempotent: true, openWorld: true},
+	"terminate_workflow":          {destructive: true, idempotent: true, openWorld: true},
+	"purge_workflow":              {destructive: true, openWorld: true},
+	"start_workflow":              {openWorld: true},
+	"rerun_workflow":              {openWorld: true},
+	"raise_workflow_event":        {openWorld: true},
 	"save_state":                  {idempotent: true, openWorld: true},
 	"acquire_lock":                {idempotent: true, openWorld: true},
 	"delete_state":                {destructive: true, idempotent: true, openWorld: true},
@@ -67,6 +78,7 @@ func listRegisteredTools(t *testing.T) []*mcp.Tool {
 	conversation.RegisterTools(server, client, nil)
 	cryptography.RegisterTools(server, client, nil)
 	lock.RegisterTools(server, client, nil)
+	workflow.RegisterTools(server, nil, nil)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
