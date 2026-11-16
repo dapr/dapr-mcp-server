@@ -18,6 +18,7 @@ body:
       options:
         - actors
         - auth (OIDC / SPIFFE / Sentry / hybrid)
+        - binary store
         - bindings
         - ci/release
         - conversation
@@ -28,11 +29,13 @@ body:
         - lock
         - metadata
         - pubsub
+        - search
         - secrets
         - state
         - telemetry
         - transport (stdio / SSE / HTTP)
         - workflow
+        - vector
         - other
     validations:
       required: true
