@@ -91,7 +91,7 @@ func TestNewMCPServerAdvertisesCapabilities(t *testing.T) {
 
 	caps := session.InitializeResult().Capabilities
 	assert.Equal(t, &mcp.ServerCapabilities{
-		Logging: &mcp.LoggingCapabilities{},
+		Logging: &mcp.LoggingCapabilities{}, //nolint:staticcheck // asserts the capability kept for 2025-11-25 clients
 		Tools:   &mcp.ToolCapabilities{ListChanged: true},
 	}, caps)
 	assert.Equal(t, "test instructions", session.InitializeResult().Instructions)
