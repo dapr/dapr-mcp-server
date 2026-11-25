@@ -3,7 +3,7 @@ module github.com/dapr/dapr-mcp-server
 go 1.26.6
 
 require (
-	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/dapr/dapr v1.18.2
 	github.com/dapr/durabletask-go v0.12.2-0.20260720132056-79042da5fe61
 	github.com/dapr/go-sdk v1.15.0
