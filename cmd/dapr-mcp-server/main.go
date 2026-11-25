@@ -405,7 +405,7 @@ func newMCPServer(instructions string) *mcp.Server {
 	return mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
 		Instructions: instructions,
 		Capabilities: &mcp.ServerCapabilities{
-			Logging: &mcp.LoggingCapabilities{},
+			Logging: &mcp.LoggingCapabilities{}, //nolint:staticcheck // still needed for 2025-11-25 clients
 			Tools:   &mcp.ToolCapabilities{ListChanged: true},
 		},
 	})
