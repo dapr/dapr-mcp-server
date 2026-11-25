@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	dtworkflow "github.com/dapr/durabletask-go/workflow"
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -22,6 +23,7 @@ import (
 	secret "github.com/dapr/dapr-mcp-server/pkg/secrets"
 	state "github.com/dapr/dapr-mcp-server/pkg/state"
 	"github.com/dapr/dapr-mcp-server/pkg/telemetry"
+	workflow "github.com/dapr/dapr-mcp-server/pkg/workflow"
 )
 
 const (
@@ -87,7 +89,7 @@ type toolSyncer struct {
 	applied    uint64 // number of the newest fetch applied
 }
 
-// registerTools registers the core tools and the tools of each building block
+// registerTools registers the core tools (including workflow) and the tools of each building block
 // that has at least one component loaded in the sidecar.
 // The returned syncer updates the building-block tools as components change:
 // before every tools/list request and after every successful get_components call.
@@ -104,6 +106,9 @@ func registerTools(ctx context.Context, server *mcp.Server, client dapr.Client, 
 	metadata.RegisterTools(server, client, toolMetrics, metadata.WithComponentsObserver(syncer.startFetch))
 	invoke.RegisterTools(server, client, toolMetrics)
 	actor.RegisterTools(server, client, toolMetrics)
+	// Workflows are part of the Dapr runtime, not a component,
+	// so the client reuses the sidecar's gRPC connection.
+	workflow.RegisterTools(server, dtworkflow.NewClient(client.GrpcClientConn()), toolMetrics)
 
 	if err := syncer.refresh(ctx); err != nil {
 		return nil, err
