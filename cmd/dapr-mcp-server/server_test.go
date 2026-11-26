@@ -76,7 +76,7 @@ func TestRunStdioReturnsNilOnContextCancel(t *testing.T) {
 
 func TestNewMCPServerAdvertisesCapabilities(t *testing.T) {
 	t.Parallel()
-	server := newMCPServer("test instructions")
+	server := newMCPServer("test instructions", nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 

@@ -46,6 +46,7 @@ var (
 	showVersion     = flag.Bool("version", false, "print the version and exit")
 	healthCheck     = flag.Bool("health-check", false, "run a health check against the running server and exit")
 	healthCheckAddr = flag.String("health-check-addr", "", "host:port probed by --health-check (default: derived from --http, else "+defaultHealthCheckAddr+")")
+	transport       = registerTransportFlags(flag.CommandLine)
 )
 
 func main() {
@@ -108,6 +109,14 @@ func redirectDaprSDKLogs(w io.Writer) {
 func run(ctx context.Context, logger *slog.Logger) error {
 	logger.Info("Starting dapr-mcp-server", "version", Version)
 
+	transportCfg, err := transport.resolve(*httpAddr != "")
+	if err != nil {
+		return fmt.Errorf("transport flags: %w", err)
+	}
+	for _, w := range transportCfg.warnings {
+		logger.Warn(w)
+	}
+
 	shutdownTelemetry, err := telemetry.Initialize(ctx, telemetry.WithServiceVersion(Version))
 	if err != nil {
 		logger.Warn("Failed to initialize telemetry, continuing without observability", "error", err)
@@ -145,7 +154,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	instructions := buildInstructions()
 	logger.Debug("Server instructions configured", "instructions", instructions)
 
-	server := newMCPServer(instructions)
+	server := newMCPServer(instructions, transportCfg.protocolVersions)
+	logger.Info("MCP protocol configured",
+		"spec_version", transportCfg.specVersion, "effective_spec_version", transportCfg.effectiveVersion)
 
 	healthChecker := health.NewHandler(daprClient, Version, logger)
 
@@ -159,7 +170,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return runStdio(ctx, server, &mcp.StdioTransport{})
 	}
 
-	handler, authenticators, err := buildHTTPHandler(ctx, server, healthChecker, httpMetrics, logger)
+	streamOpts, err := transportCfg.streamableOptions(ctx, daprClient, logger)
+	if err != nil {
+		return err
+	}
+	handler, authenticators, err := buildHTTPHandler(ctx, server, streamOpts, healthChecker, httpMetrics, logger)
 	if err != nil {
 		return err
 	}
@@ -241,7 +256,7 @@ func corsMiddleware(origin string, next http.Handler) http.Handler {
 
 // buildHTTPHandler wires the health, subscription and MCP routes, with auth in front of MCP.
 // The returned authenticators hold background resources, so the caller closes them once the server stops.
-func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, []auth.Authenticator, error) {
+func buildHTTPHandler(ctx context.Context, server *mcp.Server, streamOpts *mcp.StreamableHTTPOptions, healthChecker *health.Handler, httpMetrics *telemetry.HTTPMetrics, logger *slog.Logger) (http.Handler, []auth.Authenticator, error) {
 	authConfig := auth.DefaultConfig()
 	if err := authConfig.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid authentication configuration: %w", err)
@@ -272,11 +287,15 @@ func buildHTTPHandler(ctx context.Context, server *mcp.Server, healthChecker *he
 		_, _ = w.Write([]byte(`[]`))
 	})
 
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{})
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, streamOpts)
 	// Telemetry is the outer layer so metrics cover every request, including auth failures.
 	mux.Handle("/", telemetry.HTTPMiddleware(authMiddleware(mcpHandler), logger, httpMetrics))
 
-	logger.Info("MCP HTTP server configured", "auth_enabled", authConfig.Enabled())
+	logger.Info("MCP HTTP server configured",
+		"auth_enabled", authConfig.Enabled(),
+		"stateless", streamOpts != nil && streamOpts.Stateless,
+		"stream_resumption", streamOpts != nil && streamOpts.EventStore != nil,
+	)
 	return corsMiddleware(os.Getenv(corsOriginEnv), mux), authenticators, nil
 }
 
@@ -402,9 +421,11 @@ func buildAuthenticators(ctx context.Context, cfg auth.Config, logger *slog.Logg
 
 // newMCPServer builds the MCP server, advertising the logging and tools
 // capabilities (with list-changed notifications) regardless of which tools register.
-func newMCPServer(instructions string) *mcp.Server {
+// protocolVersions narrows the protocol versions the server speaks; nil keeps the SDK's full list.
+func newMCPServer(instructions string, protocolVersions []string) *mcp.Server {
 	return mcp.NewServer(&mcp.Implementation{Name: "dapr-mcp-server", Version: Version}, &mcp.ServerOptions{
-		Instructions: instructions,
+		Instructions:              instructions,
+		SupportedProtocolVersions: protocolVersions,
 		Capabilities: &mcp.ServerCapabilities{
 			Logging: &mcp.LoggingCapabilities{}, //nolint:staticcheck // kept for 2025-11-25 clients during the deprecation window
 			Tools:   &mcp.ToolCapabilities{ListChanged: true},

@@ -75,7 +75,7 @@ func serve(handler http.Handler, method, path string) *httptest.ResponseRecorder
 func TestBuildHTTPHandlerAuthDisabled(t *testing.T) {
 	clearAuthEnv(t)
 
-	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 	require.NoError(t, err)
 
 	for _, path := range []string{health.LivenessPath, health.ReadinessPath, health.StartupPath} {
@@ -89,7 +89,7 @@ func TestBuildHTTPHandlerHealthBypassesAuth(t *testing.T) {
 	clearAuthEnv(t)
 	enableSentryAuth(t, newJWKSServer(t, http.StatusOK).URL)
 
-	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 	require.NoError(t, err)
 
 	for _, path := range []string{health.LivenessPath, health.ReadinessPath, health.StartupPath} {
@@ -104,7 +104,7 @@ func TestBuildHTTPHandlerHybridSentry(t *testing.T) {
 	t.Setenv("AUTH_MODE", string(auth.ModeHybrid))
 	t.Setenv("DAPR_SENTRY_ENABLED", "true")
 
-	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, serve(handler, http.MethodPost, "/").Code)
 }
@@ -113,7 +113,7 @@ func TestBuildHTTPHandlerCORSFromEnv(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv(corsOriginEnv, testOrigin)
 
-	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 	require.NoError(t, err)
 
 	assert.Equal(t, testOrigin, serve(handler, http.MethodGet, health.LivenessPath).Header().Get("Access-Control-Allow-Origin"))
@@ -142,7 +142,7 @@ func TestBuildHTTPHandlerErrors(t *testing.T) {
 			clearAuthEnv(t)
 			enableSentryAuth(t, tt.jwksURL(t))
 
-			handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+			handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 			assert.ErrorContains(t, err, tt.wantErr)
 			assert.Nil(t, handler)
 		})
@@ -176,7 +176,7 @@ func TestBuildHTTPHandlerRejectsRemovedSkipPaths(t *testing.T) {
 	enableSentryAuth(t, newJWKSServer(t, http.StatusOK).URL)
 	t.Setenv("AUTH_SKIP_PATHS", "/")
 
-	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), newReadyHealthHandler(), nil, discardLogger())
+	handler, _, err := buildHTTPHandler(context.Background(), newTestMCPServer(), nil, newReadyHealthHandler(), nil, discardLogger())
 
 	require.ErrorIs(t, err, auth.ErrAuthSkipPathsRemoved)
 	assert.Nil(t, handler)
