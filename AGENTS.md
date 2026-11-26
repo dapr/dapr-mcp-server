@@ -13,7 +13,7 @@ Both sections are short on purpose. Deep content lives in the [docs](https://doc
 
 - This repo is a **Go Model Context Protocol (MCP) server** that fronts the [Dapr runtime](https://dapr.io) and exposes Dapr's building blocks (state, pub/sub, secrets, workflows, etc.) as MCP tools.
 - Module: `github.com/dapr/dapr-mcp-server`. Go 1.26.6+. MCP SDK: `github.com/modelcontextprotocol/go-sdk`.
-- Transports: **stdio** (default, for Claude Desktop / Cursor) and **streamable HTTP** (`--http <addr>`, for remote clients).
+- Transports: **stdio** (default, for Claude Desktop / Cursor) and **streamable HTTP** (`--http <addr>`, for remote clients). HTTP options: `--stateless`, `--event-store <state store>`; `--spec-version <date>` caps the negotiated protocol (see the README).
 - Tools register **conditionally** based on which Dapr components the sidecar reports via `get_components`. Always call `get_components` before invoking any component-specific tool.
 
 ---
@@ -34,6 +34,7 @@ All commands assume the repo root is the working directory.
 | Run with coverage (CI mirror) | `go test -race -coverprofile=coverage.out -covermode=atomic ./...` |
 | Coverage summary | `go tool cover -func=coverage.out` |
 | Lint | `golangci-lint run ./...` (config in `.golangci.yml`, gosec + staticcheck + govet among others) |
+| Integration tests (Go, event store against a real sidecar) | `DAPR_EVENT_STORE_IT=statestore dapr run --app-id eventstore-it -- go test -count=1 -run Dapr ./...` (skipped when `DAPR_EVENT_STORE_IT` is unset) |
 | Integration tests (Python) | `cd test && uv sync && uv run python app.py` (needs a running `dapr-mcp-server` + Dapr sidecar) |
 
 Minimum coverage threshold expected by reviewers: no hard gate in CI but aim for parity with siblings (see `./pkg/state` as an exemplar).

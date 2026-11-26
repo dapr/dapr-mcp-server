@@ -51,8 +51,27 @@ The [configuration guide](https://docs.dapr.io/developing-ai/mcp/dapr-mcp-server
 | `--health-check` | `false` | Probe `/livez` of a running server and exit 0 if it answers 200, 1 otherwise. Used by the container `HEALTHCHECK`. |
 | `--health-check-addr <host:port>` | from `--http`, else `localhost:8080` | Address `--health-check` probes. A wildcard host such as `0.0.0.0` is probed as `localhost`. |
 | `--version` | `false` | Print the version and exit. |
+| `--stateless` | `false` | HTTP only. Serve streamable HTTP without sessions: no `Mcp-Session-Id`, every request stands alone, and server-to-client requests (elicitation, sampling) are refused. Clients on protocol `2026-07-28` reach the server over HTTP only in this mode. Ignored, with a warning, over stdio. |
+| `--event-store <state store>` | unset | HTTP only. Keep server-sent events in this Dapr state store so a client whose stream drops can resume it with `Last-Event-ID` while the server process that holds its session keeps running. Needs sessions, so it cannot be combined with `--stateless`. Also closes any session that sends no request for one hour; a client that only listens on its GET stream must initialize again after that. At startup the server writes and deletes a probe key, with the same `ttlInSeconds` metadata as an event, and exits if the state store refuses either. The state store then becomes a hard dependency of every session-mode request: the server records each POST's stream before handling it, so while the state store is unavailable every POST, `initialize` included, fails with HTTP 500. The stored events hold complete tool results, including secret values and decrypted plaintext, unencrypted; see below. Ignored, with a warning, over stdio. |
+| `--spec-version <date>` | newest the SDK supports (`2026-07-28`) | Newest MCP protocol version the server negotiates. Older versions stay accepted, newer ones are refused. One of `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` with the current Go MCP SDK; the list comes from the SDK, and `--help` prints the one your build supports. |
 
 Logs are written as JSON to stderr, so they never mix with the stdio transport on stdout. `/readyz` returns 503 while the Dapr sidecar is unreachable.
+
+### Protocol versions and transports
+
+The server speaks two generations of the MCP protocol. Up to `2025-11-25` a client opens a session with `initialize`. From `2026-07-28` there are no sessions: a client calls `server/discover` and sends its protocol version and capabilities with every request.
+
+| Transport | Protocols served |
+| --- | --- |
+| stdio | All supported versions, including `server/discover`. |
+| `--http` | Up to `2025-11-25`, with sessions. A newer client falls back to `initialize`. |
+| `--http --stateless` | All supported versions, without sessions. `server/discover` answers `2026-07-28` clients. |
+
+Stream resumption (`--event-store`) is part of the session protocols only; `2026-07-28` removed it. Resumption does not survive a server restart: the Go MCP SDK keeps sessions in memory and rejects a session ID the process did not create, and it has no hook to restore one, so the events left in the state store can no longer be reached. Keeping them in a state store bounds the server's memory, and the TTL reclaims them. Each event expires after one hour, and the small records that hold each stream's event count expire after 24 hours, so storage is reclaimed even when a session is never closed, while a stream that stays silent for longer than an hour (a slow tool call, or the stream a client opens with GET) keeps its event numbering. Use a state store that supports the `ttlInSeconds` metadata, such as Redis. Because abandoned sessions would otherwise never release their events, turning on `--event-store` also closes sessions that send no request for one hour (the SDK's session timeout counts only the time between requests, so a stream held open with GET does not keep a session alive); without `--event-store` idle sessions are never closed.
+
+A client should open its listening GET stream when the session starts and, when it drops, resume it with `Last-Event-ID`. The server stores the session's standalone notifications from the start whether or not a GET is attached, and a GET without `Last-Event-ID` asks for all of them. Once the first of them has expired (after one hour), such a GET is refused with HTTP 400, because the events can no longer be numbered as the client would expect. The SDK's in-memory event store does the same once it has dropped events. A cleaner fix needs the SDK's `After` to report where a replay starts.
+
+The event store keeps every server-sent event as sent, which includes the full result of every tool call: values returned by `get_secret`, `get_bulk_secrets` and `get_state`, and plaintext returned by `decrypt_data`. Anyone who can read that state store can read them for as long as the records live. Point `--event-store` at a state store used only by this server, scope it to this app, and turn on [Dapr state encryption](https://docs.dapr.io/developing-applications/building-blocks/state-management/howto-encrypt-state/) for it.
 
 Settings specific to the HTTP transport:
 
